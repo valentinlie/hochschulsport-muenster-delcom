@@ -13,7 +13,7 @@
     <td class="actions">
         {% if a.status == "success" and a.booking_id and not a.cancelled_at %}
         <button hx-post="/attempts/{{ a.id }}/cancel" hx-target="#attempt-row-{{ a.id }}" hx-swap="outerHTML"
-            hx-confirm="Cancel this booking on hochschulsportmuenster.de?" class="outline secondary">
+            class="outline secondary">
             Cancel booking
         </button>
         {% endif %}

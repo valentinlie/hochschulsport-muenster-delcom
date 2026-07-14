@@ -2,7 +2,13 @@
 <tr id="job-row-{{ job.id }}">
     <td>{{ job.id }}</td>
     <td><a href="/jobs/{{ job.id }}/edit">{{ job.name }}</a></td>
-    <td>{{ activities.get(job.activity_product_id, "#" ~ job.activity_product_id) }}</td>
+    <td>
+        {% if job.activity_option in activity_options %}
+        {{ activity_options[job.activity_option].label }}
+        {% else %}
+        {{ activities.get(job.activity_product_id, "#" ~ job.activity_product_id) }}
+        {% endif %}
+    </td>
     <td>
         {{ job.slot_start_time }}
         {% if job.preferred_court_id %}(court {{ job.preferred_court_id }}){% else %}(any court){% endif %}
@@ -23,11 +29,11 @@
             {{ "Disable" if job.enabled else "Enable" }}
         </button>
         <button hx-post="/jobs/{{ job.id }}/run" hx-target="#run-result-{{ job.id }}" hx-swap="innerHTML"
-            hx-confirm="Attempt a REAL booking now?" class="outline">
+            class="outline">
             Run Now
         </button>
         <button hx-post="/jobs/{{ job.id }}/delete" hx-target="#job-row-{{ job.id }}" hx-swap="outerHTML"
-            hx-confirm="Delete job '{{ job.name }}'?" class="outline secondary">
+            class="outline secondary">
             Delete
         </button>
         <span id="run-result-{{ job.id }}"></span>

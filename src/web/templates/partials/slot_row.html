@@ -1,0 +1,24 @@
+<tr id="slot-row-{{ row_id }}">
+    <td>{{ start }}–{{ end }}</td>
+    <td>{{ court_id }}</td>
+    <td>
+        {% if booked %}
+        <span class="badge badge-success">booked</span>
+        {% elif free %}
+        <span class="badge badge-success">free</span>
+        {% else %}
+        <span class="badge badge-failed">taken</span>
+        {% endif %}
+    </td>
+    <td>{{ linked_id }}</td>
+    <td class="actions">
+        {% if free and not booked %}
+        <button hx-post="/slots/book" hx-target="#slot-row-{{ row_id }}" hx-swap="outerHTML"
+            hx-vals='{"activity_product_id": {{ activity }}, "day": "{{ day }}", "slot_start_time": "{{ start }}", "end_time": "{{ end }}", "court_id": {{ court_id }}, "linked_id": "{{ linked_id }}", "row_id": {{ row_id }}}'
+            class="outline">
+            Book now
+        </button>
+        {% endif %}
+        {% if message %}<div class="alert-{{ message_type }}">{{ message }}</div>{% endif %}
+    </td>
+</tr>

@@ -8,6 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from config import ACTIVITY_OPTIONS
 from core import db
 from core.scheduler import remove_job, run_now, sync_job
 from web import ctx, job_row, templates
@@ -50,10 +51,28 @@ def _validate(data: dict) -> str | None:
     return None
 
 
+def _option_for(job: db.Job) -> str:
+    """The select value for a job: its saved option, or (for jobs saved
+    before options existed) the first option matching its activity id."""
+    if job.activity_option in ACTIVITY_OPTIONS:
+        return job.activity_option
+    return next(
+        (
+            key
+            for key, opt in ACTIVITY_OPTIONS.items()
+            if opt["activity_product_id"] == job.activity_product_id
+        ),
+        next(iter(ACTIVITY_OPTIONS)),
+    )
+
+
 @router.get("/jobs/new", response_class=HTMLResponse)
 def job_new(request: Request, _user: str = Depends(require_auth)):
     return templates.TemplateResponse(
-        request, "job_form.html", ctx(job=None, dow_choices=DOW_CHOICES)
+        request,
+        "job_form.html",
+        ctx(job=None, dow_choices=DOW_CHOICES,
+            selected_option=next(iter(ACTIVITY_OPTIONS))),
     )
 
 
@@ -63,7 +82,9 @@ def job_edit(request: Request, job_id: int, _user: str = Depends(require_auth)):
     if job is None:
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(
-        request, "job_form.html", ctx(job=job, dow_choices=DOW_CHOICES)
+        request,
+        "job_form.html",
+        ctx(job=job, dow_choices=DOW_CHOICES, selected_option=_option_for(job)),
     )
 
 
@@ -74,7 +95,7 @@ def job_save(
     job_id: int | None = None,
     name: str = Form(""),
     enabled: bool = Form(False),
-    activity_product_id: int = Form(...),
+    activity_option: str = Form(...),
     preferred_court_id: str = Form(""),
     slot_start_time: str = Form("08:00"),
     date_offset: int = Form(7),
@@ -83,10 +104,12 @@ def job_save(
     run_minute: int = Form(0),
     _user: str = Depends(require_auth),
 ):
+    option = ACTIVITY_OPTIONS.get(activity_option)
     data = {
         "name": name.strip() or "Unnamed job",
         "enabled": enabled,
-        "activity_product_id": activity_product_id,
+        "activity_product_id": option["activity_product_id"] if option else 0,
+        "activity_option": activity_option,
         "preferred_court_id": None,
         "slot_start_time": slot_start_time,
         "date_offset": date_offset,
@@ -95,17 +118,25 @@ def job_save(
         "run_minute": run_minute,
     }
     error = None
+    if option is None:
+        error = "Unknown activity option."
     if preferred_court_id.strip():
         try:
             data["preferred_court_id"] = int(preferred_court_id)
         except ValueError:
-            error = "Preferred court id must be a number."
+            error = error or "Preferred court id must be a number."
     error = error or _validate(data)
     if error is not None:
         return templates.TemplateResponse(
             request,
             "job_form.html",
-            ctx(job=SimpleNamespace(id=job_id, **data), dow_choices=DOW_CHOICES, error=error),
+            ctx(job=SimpleNamespace(id=job_id, **data), dow_choices=DOW_CHOICES,
+                error=error,
+                selected_option=(
+                    activity_option
+                    if activity_option in ACTIVITY_OPTIONS
+                    else next(iter(ACTIVITY_OPTIONS))
+                )),
             status_code=422,
         )
     if job_id is None:

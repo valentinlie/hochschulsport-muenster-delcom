@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 
 from core import db
-from config import ACTIVITIES
+from config import ACTIVITIES, ACTIVITY_OPTIONS
 from core.scheduler import get_scheduler
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -25,7 +25,7 @@ templates.env.filters["dt"] = _fmt_dt
 
 
 def ctx(**kwargs) -> dict:
-    return {"activities": ACTIVITIES, **kwargs}
+    return {"activities": ACTIVITIES, "activity_options": ACTIVITY_OPTIONS, **kwargs}
 
 
 def job_row(job: db.Job) -> dict:

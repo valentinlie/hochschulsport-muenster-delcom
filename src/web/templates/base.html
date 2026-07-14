@@ -103,6 +103,19 @@
             font-size: 0.8rem;
         }
 
+        /* Result messages swapped into an .actions cell (which is nowrap):
+           let them wrap within a bounded width so a long message doesn't
+           stretch the column and distort the whole table. */
+        .actions .alert-success,
+        .actions .alert-error {
+            display: block;
+            white-space: normal;
+            max-width: 18rem;
+            margin: 0.25rem 0 0;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.8rem;
+        }
+
         /* Pico gives [type=submit] a bottom margin but not a[role=button]; in a
            .grid the row is sized by the submit button's margin box, stretching a
            link-button next to it taller. Matching the margin keeps them equal. */

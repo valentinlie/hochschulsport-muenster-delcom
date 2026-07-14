@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
+from typing import Iterable
 
 from core import db
-from config import DELCOM_PASSWORD, DELCOM_USERNAME
+from config import ACTIVITY_OPTIONS, DELCOM_PASSWORD, DELCOM_USERNAME
 from core.delcom import (
     LOCAL_TZ,
     DelcomClient,
@@ -117,10 +118,14 @@ def execute_booking(
     target: date,
     slot_start_time: str,
     preferred_court_id: int | None = None,
+    allowed_court_ids: Iterable[int] | None = None,
     dry_run: bool = False,
     job_id: int | None = None,
 ) -> tuple[str, str]:
     """Make one booking pass. Returns ``(status, message)``.
+
+    ``allowed_court_ids`` restricts booking to those courts (an activity like
+    tennis 126 spans several locations; the court set selects one).
 
     Queries the slots once and books immediately; the only fallback is
     trying the next free court when the server rejects one as blocked.
@@ -155,6 +160,9 @@ def execute_booking(
         message = f"Slot query failed: {exc}"
         record("error", message)
         return "error", message
+    if allowed_court_ids is not None:
+        allowed = set(allowed_court_ids)
+        slots = [s for s in slots if s.get("bookableProductId") in allowed]
     try:
         bookings = client.get_court_bookings(
             {s["bookableProductId"] for s in slots}, target
@@ -240,11 +248,13 @@ def run_booking_job(job_id: int, next_occurrence: bool = False) -> str:
         target = _next_target_date(job)
     else:
         target = date.today() + timedelta(days=job.date_offset)
+    option = ACTIVITY_OPTIONS.get(job.activity_option or "")
     status, _message = execute_booking(
         activity_product_id=job.activity_product_id,
         target=target,
         slot_start_time=job.slot_start_time,
         preferred_court_id=job.preferred_court_id,
+        allowed_court_ids=option["court_ids"] if option else None,
         job_id=job.id,
     )
     return status

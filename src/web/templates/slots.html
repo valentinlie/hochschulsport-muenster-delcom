@@ -9,13 +9,12 @@
 <form method="get" action="/slots">
     <div class="grid">
         <label>
-            Activity product id
-            <input list="activity-list" name="activity_product_id" value="{{ activity or 126 }}" required>
-            <datalist id="activity-list">
-                {% for id, name in activities.items() %}
-                <option value="{{ id }}">{{ name }}</option>
+            Activity
+            <select name="option" required>
+                {% for key, opt in activity_options.items() %}
+                <option value="{{ key }}" {{ "selected" if key == option }}>{{ opt.label }}</option>
                 {% endfor %}
-            </datalist>
+            </select>
         </label>
         <label>
             Day
@@ -40,22 +39,16 @@
             <th>Court id</th>
             <th>Available</th>
             <th>Linked</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
         {% for s in rows %}
-        <tr>
-            <td>{{ slot_local_time(s) }}–{{ slot_local_end(s) }}</td>
-            <td>{{ s.bookableProductId }}</td>
-            <td>
-                {% if is_free(s) %}
-                <span class="badge badge-success">free</span>
-                {% else %}
-                <span class="badge badge-failed">taken</span>
-                {% endif %}
-            </td>
-            <td>{{ s.linkedProductId }}</td>
-        </tr>
+        {% with row_id=loop.index, start=slot_local_time(s), end=slot_local_end(s),
+        court_id=s.bookableProductId, linked_id=s.linkedProductId,
+        free=is_free(s), booked=false, message=None %}
+        {% include "partials/slot_row.html" %}
+        {% endwith %}
         {% endfor %}
     </tbody>
 </table>

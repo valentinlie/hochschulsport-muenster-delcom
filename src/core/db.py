@@ -27,6 +27,9 @@ class Job:
     name: str
     enabled: bool
     activity_product_id: int
+    # key into config.ACTIVITY_OPTIONS (restricts booking to that location's
+    # courts); NULL on jobs saved before options existed = any court
+    activity_option: str | None
     preferred_court_id: int | None
     slot_start_time: str
     date_offset: int
@@ -121,6 +124,7 @@ def init_db() -> None:
                 name                VARCHAR(200) NOT NULL,
                 enabled             BOOLEAN NOT NULL DEFAULT TRUE,
                 activity_product_id INT NOT NULL,
+                activity_option     VARCHAR(50),
                 preferred_court_id  INT,
                 slot_start_time     VARCHAR(5) NOT NULL,
                 date_offset         INT NOT NULL DEFAULT 7,
@@ -155,14 +159,16 @@ def create_job(data: dict) -> int:
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """INSERT INTO hsp_booking_jobs
-               (name, enabled, activity_product_id, preferred_court_id,
-                slot_start_time, date_offset, run_dow, run_hour, run_minute)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+               (name, enabled, activity_product_id, activity_option,
+                preferred_court_id, slot_start_time, date_offset, run_dow,
+                run_hour, run_minute)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 data["name"],
                 data.get("enabled", True),
                 data["activity_product_id"],
+                data.get("activity_option"),
                 data.get("preferred_court_id"),
                 data["slot_start_time"],
                 data.get("date_offset", 7),
@@ -178,14 +184,15 @@ def update_job(job_id: int, data: dict) -> None:
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """UPDATE hsp_booking_jobs SET
-               name=%s, enabled=%s, activity_product_id=%s, preferred_court_id=%s,
-               slot_start_time=%s, date_offset=%s, run_dow=%s, run_hour=%s,
-               run_minute=%s
+               name=%s, enabled=%s, activity_product_id=%s, activity_option=%s,
+               preferred_court_id=%s, slot_start_time=%s, date_offset=%s,
+               run_dow=%s, run_hour=%s, run_minute=%s
                WHERE id=%s""",
             (
                 data["name"],
                 data.get("enabled", True),
                 data["activity_product_id"],
+                data.get("activity_option"),
                 data.get("preferred_court_id"),
                 data["slot_start_time"],
                 data.get("date_offset", 7),
