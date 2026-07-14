@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Edit" if job and job.id else "New" }} Job - Hochschulsport Münster Bot{% endblock %}
+
+{% block content %}
+<h2>{{ "Edit job" if job and job.id else "New booking job" }}</h2>
+<p><a href="/">← Back</a></p>
+
+{% if error %}
+<div role="alert" class="alert-error">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="{{ (" /jobs/" ~ job.id) if job and job.id else "/jobs" }}">
+    <label>
+        Name
+        <input name="name" value="{{ job.name if job else 'Tennis Saturday 15:00' }}" required>
+    </label>
+
+    <fieldset>
+        <legend><strong>What to book</strong></legend>
+
+        <label>
+            Activity product
+            <input list="activity-list" name="activity_product_id" value="{{ job.activity_product_id if job else 126 }}"
+                required>
+            <datalist id="activity-list">
+                {% for id, name in activities.items() %}
+                <option value="{{ id }}">{{ name }}</option>
+                {% endfor %}
+            </datalist>
+            <small>The id used to query slots (e.g. 126 = Tennisplatz Platzbuchung). Use "Live slots" to discover
+                ids.</small>
+        </label>
+
+        <div class="grid">
+            <label>
+                Preferred court id (optional)
+                <input name="preferred_court_id" type="number"
+                    value="{{ job.preferred_court_id if job and job.preferred_court_id else '' }}"
+                    placeholder="empty = any available court">
+            </label>
+            <label>
+                Slot start time (local)
+                <input name="slot_start_time" type="time" value="{{ job.slot_start_time if job else '15:00' }}"
+                    required>
+            </label>
+        </div>
+    </fieldset>
+
+    <fieldset>
+        <legend><strong>When to grab it</strong></legend>
+
+        <label>
+            Offset (book this many days ahead)
+            <input name="date_offset" type="number" min="0" max="60" value="{{ job.date_offset if job else 7 }}"
+                required>
+            <small>The booking window opens this many days before the slot. Tennis (126) opens 7 days ahead.</small>
+        </label>
+
+        <div class="grid">
+            <label>
+                Fire on
+                <select name="run_dow">
+                    {% for val, label in dow_choices %}
+                    <option value="{{ val }}" {{ "selected" if job and job.run_dow==val }}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Hour
+                <input name="run_hour" type="number" min="0" max="23" value="{{ job.run_hour if job else 0 }}">
+            </label>
+            <label>
+                Minute
+                <input name="run_minute" type="number" min="0" max="59" value="{{ job.run_minute if job else 1 }}">
+            </label>
+        </div>
+        <small>Set the fire day/time to exactly when the window opens.
+            For a Saturday 15:00 court booked 7 days ahead (offset 7), fire on <strong>Saturday 00:01</strong>.</small>
+    </fieldset>
+
+    <label>
+        <input type="checkbox" name="enabled" role="switch" {{ "checked" if (not job) or job.enabled }}>
+        Enabled
+    </label>
+
+    <div class="grid">
+        <button type="submit">Save job</button>
+        <a href="/" role="button" class="secondary outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

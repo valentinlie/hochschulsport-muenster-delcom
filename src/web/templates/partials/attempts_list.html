@@ -1,0 +1,21 @@
+{% if attempts %}
+<table>
+    <thead>
+        <tr>
+            <th>When</th>
+            <th>Status</th>
+            <th>Target</th>
+            <th>Court</th>
+            <th>Details</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for a in attempts %}
+        {% include "partials/attempt_row.html" %}
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No attempts recorded yet.</p>
+{% endif %}

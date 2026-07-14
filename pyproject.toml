@@ -1,0 +1,17 @@
+[project]
+name = "hochschulsport-muenster-delcom"
+version = "0.1.0"
+description = "Auto-booking bot for Hochschulsport Münster (Delcom) — books courts the instant the window opens"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "jinja2>=3.1.5",
+    "python-multipart>=0.0.20",
+    "apscheduler>=3.10,<4",
+    "psycopg[binary,pool]>=3.1",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "tzdata>=2024.1",
+]

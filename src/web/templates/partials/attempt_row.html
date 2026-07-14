@@ -1,0 +1,21 @@
+<tr id="attempt-row-{{ a.id }}">
+    <td>{{ a.created_at | dt }}</td>
+    <td>
+        <span class="badge badge-{{ a.status }}">{{ a.status }}</span>
+        {% if a.cancelled_at %}<span class="badge badge-cancelled">cancelled</span>{% endif %}
+    </td>
+    <td>{{ a.target_date or "—" }}{% if a.slot_start_time %} {{ a.slot_start_time }}{% endif %}</td>
+    <td>{{ a.court_name or ("#" ~ a.court_id if a.court_id else "—") }}</td>
+    <td>
+        {{ a.message }}
+        {% if error %}<div class="alert-error">{{ error }}</div>{% endif %}
+    </td>
+    <td class="actions">
+        {% if a.status == "success" and a.booking_id and not a.cancelled_at %}
+        <button hx-post="/attempts/{{ a.id }}/cancel" hx-target="#attempt-row-{{ a.id }}" hx-swap="outerHTML"
+            hx-confirm="Cancel this booking on hochschulsportmuenster.de?" class="outline secondary">
+            Cancel booking
+        </button>
+        {% endif %}
+    </td>
+</tr>

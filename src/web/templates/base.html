@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Hochschulsport Münster Bot{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        nav ul li a.active {
+            font-weight: bold;
+            text-decoration: underline;
+        }
+
+        .alert-success {
+            color: #2a7a2a;
+            background: #e6f4e6;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+        }
+
+        .alert-error {
+            color: #a33;
+            background: #fde8e8;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+        }
+
+        .htmx-indicator {
+            display: none;
+        }
+
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .badge-no_slot {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .badge-enabled {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-disabled {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .badge-cancelled {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        table {
+            font-size: 0.9rem;
+        }
+
+        .actions {
+            white-space: nowrap;
+        }
+
+        .actions form,
+        .actions a {
+            display: inline;
+        }
+
+        .actions button {
+            margin: 0 0.15rem;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.8rem;
+        }
+
+        /* Pico gives [type=submit] a bottom margin but not a[role=button]; in a
+           .grid the row is sized by the submit button's margin box, stretching a
+           link-button next to it taller. Matching the margin keeps them equal. */
+        .grid>a[role="button"] {
+            margin-bottom: var(--pico-spacing);
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><strong>Hochschulsport Münster Bot</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/" {% if active_page=="dashboard" %}class="active" {% endif %}>Dashboard</a></li>
+            <li><a href="/history" {% if active_page=="history" %}class="active" {% endif %}>History</a></li>
+            <li><a href="/slots" {% if active_page=="slots" %}class="active" {% endif %}>Live slots</a></li>
+        </ul>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="container">
+        <small>Hochschulsport Münster Bot</small>
+    </footer>
+</body>
+
+</html>

@@ -1,0 +1,6 @@
+src/config.py
+.venv/
+__pycache__/
+*.pyc
+.token_cache.json
+scratchpad/

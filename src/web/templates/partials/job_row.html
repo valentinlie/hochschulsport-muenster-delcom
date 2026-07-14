@@ -1,0 +1,35 @@
+{% set job = row.job %}
+<tr id="job-row-{{ job.id }}">
+    <td>{{ job.id }}</td>
+    <td><a href="/jobs/{{ job.id }}/edit">{{ job.name }}</a></td>
+    <td>{{ activities.get(job.activity_product_id, "#" ~ job.activity_product_id) }}</td>
+    <td>
+        {{ job.slot_start_time }}
+        {% if job.preferred_court_id %}(court {{ job.preferred_court_id }}){% else %}(any court){% endif %}
+    </td>
+    <td>+{{ job.date_offset }}d ahead → {{ row.target_preview }}, fires {{ job.run_dow }} {{ "%02d"|format(job.run_hour)
+        }}:{{ "%02d"|format(job.run_minute) }}</td>
+    <td>{{ row.next_run | dt }}</td>
+    <td>
+        {% if job.enabled %}
+        <span class="badge badge-enabled">Enabled</span>
+        {% else %}
+        <span class="badge badge-disabled">Disabled</span>
+        {% endif %}
+    </td>
+    <td class="actions">
+        <button hx-post="/jobs/{{ job.id }}/toggle" hx-target="#job-row-{{ job.id }}" hx-swap="outerHTML"
+            class="outline {% if job.enabled %}secondary{% endif %}">
+            {{ "Disable" if job.enabled else "Enable" }}
+        </button>
+        <button hx-post="/jobs/{{ job.id }}/run" hx-target="#run-result-{{ job.id }}" hx-swap="innerHTML"
+            hx-confirm="Attempt a REAL booking now?" class="outline">
+            Run Now
+        </button>
+        <button hx-post="/jobs/{{ job.id }}/delete" hx-target="#job-row-{{ job.id }}" hx-swap="outerHTML"
+            hx-confirm="Delete job '{{ job.name }}'?" class="outline secondary">
+            Delete
+        </button>
+        <span id="run-result-{{ job.id }}"></span>
+    </td>
+</tr>
