@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from core import db
 from config import ACTIVITIES, ACTIVITY_OPTIONS
-from core.scheduler import get_scheduler
+from core.dow import next_window
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -29,11 +29,10 @@ def ctx(**kwargs) -> dict:
 
 
 def job_row(job: db.Job) -> dict:
-    """A job plus the live scheduler info the templates display."""
-    sched_job = get_scheduler().get_job(f"job:{job.id}")
+    """A job plus the derived scheduling info the templates display."""
     return {
         "job": job,
-        # pending jobs (scheduler not started yet) have no next_run_time
-        "next_run": getattr(sched_job, "next_run_time", None),
+        # next time the booking window opens (None for a disabled job)
+        "next_run": next_window(job.run_dow, job.run_hour, job.run_minute) if job.enabled else None,
         "target_preview": (date.today() + timedelta(days=job.date_offset)).strftime("%a %d %b"),
     }

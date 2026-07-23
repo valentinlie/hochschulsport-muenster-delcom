@@ -2,15 +2,17 @@
 
 import logging
 import re
+import threading
 from types import SimpleNamespace
 
-from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config import ACTIVITY_OPTIONS
 from core import db
-from core.scheduler import remove_job, run_now, sync_job
+from core.booking import run_booking_job
+from core.dow import dow_valid
+from core.systemd import remove_job_timer, sync_job_timer
 from web import ctx, job_row, templates
 from web.auth import require_auth
 
@@ -44,9 +46,7 @@ def _validate(data: dict) -> str | None:
         return "Fire hour must be between 0 and 23."
     if not 0 <= data["run_minute"] <= 59:
         return "Fire minute must be between 0 and 59."
-    try:
-        CronTrigger(day_of_week=data["run_dow"])
-    except ValueError:
+    if not dow_valid(data["run_dow"]):
         return f"Invalid day-of-week expression: {data['run_dow']!r}."
     return None
 
@@ -145,7 +145,7 @@ def job_save(
         return RedirectResponse(url="/", status_code=303)
     else:
         db.update_job(job_id, data)
-    sync_job(db.get_job(job_id))
+    sync_job_timer(db.get_job(job_id))
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -155,13 +155,13 @@ def job_toggle(request: Request, job_id: int, _user: str = Depends(require_auth)
     job = db.get_job(job_id)
     if job is None:
         return HTMLResponse("")
-    sync_job(job)
+    sync_job_timer(job)
     return templates.TemplateResponse(request, "partials/job_row.html", ctx(row=job_row(job)))
 
 
 @router.post("/jobs/{job_id}/delete", response_class=HTMLResponse)
 def job_delete(request: Request, job_id: int, _user: str = Depends(require_auth)):
-    remove_job(job_id)
+    remove_job_timer(job_id)
     db.delete_job(job_id)
     # Return empty string so HTMX removes the row
     return HTMLResponse("")
@@ -173,7 +173,11 @@ def job_run_now(request: Request, job_id: int, _user: str = Depends(require_auth
         return templates.TemplateResponse(
             request, "partials/alert.html", ctx(type="error", message="Job not found")
         )
-    run_now(job_id)
+    # Manual runs book the job's next occurring slot day immediately (no
+    # window spin-wait); run off the request thread so the UI returns at once.
+    threading.Thread(
+        target=run_booking_job, args=(job_id,), kwargs={"next_occurrence": True}, daemon=True
+    ).start()
     return templates.TemplateResponse(
         request,
         "partials/alert.html",

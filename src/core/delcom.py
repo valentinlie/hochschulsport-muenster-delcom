@@ -10,7 +10,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urljoin, urlparse
 from zoneinfo import ZoneInfo
@@ -27,6 +30,50 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 )
 LOCAL_TZ = ZoneInfo("Europe/Berlin")
+
+# The bearer token is valid ~7 days; cache it between runs so back-to-back
+# bookings (each its own process) reuse one login instead of re-running the SSO
+# flow — repeated logins are what trips the IdP into returning no token.
+TOKEN_CACHE = Path(
+    os.environ.get("HSP_TOKEN_CACHE", str(Path.home() / ".cache" / "hsp-delcom" / "token.json"))
+)
+
+
+def _token_expiry(token: dict) -> datetime | None:
+    """Best-effort UTC expiry of a token: an explicit field, else the JWT exp."""
+    for key in ("expires_at", "expiresAt"):
+        value = token.get(key)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc)
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+    access = token.get("access_token")
+    if isinstance(access, str) and access.count(".") >= 2:
+        try:
+            payload = access.split(".")[1]
+            payload += "=" * (-len(payload) % 4)  # restore base64 padding
+            exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+            if exp:
+                return datetime.fromtimestamp(exp, timezone.utc)
+        except Exception:  # noqa: BLE001 — malformed token, expiry just unknown
+            pass
+    return None
+
+
+def _token_valid(token: dict | None, margin: int = 300) -> bool:
+    """True if the token exists and is not within ``margin`` seconds of expiry.
+
+    Unknown expiry counts as valid — the 401 re-login path is the backstop.
+    """
+    if not token or not token.get("access_token"):
+        return False
+    exp = _token_expiry(token)
+    if exp is None:
+        return True
+    return exp - timedelta(seconds=margin) > datetime.now(timezone.utc)
 
 
 class DelcomError(RuntimeError):
@@ -102,10 +149,35 @@ class DelcomClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
-        self.token: dict[str, Any] | None = None
         self.member: dict[str, Any] | None = None
+        self.token: dict[str, Any] | None = self._load_cached_token()
 
     # -- auth ---------------------------------------------------------------
+
+    def _load_cached_token(self) -> dict | None:
+        """Load a still-valid token cached by a previous run, else None."""
+        try:
+            data = json.loads(TOKEN_CACHE.read_text())
+        except (OSError, ValueError):
+            return None
+        if data.get("username") != self.username:
+            return None
+        token = data.get("token")
+        if _token_valid(token):
+            log.info("Reusing cached token for %s", self.username)
+            return token
+        return None
+
+    def _save_token(self) -> None:
+        try:
+            TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            # write-then-rename so a concurrent reader never sees a partial file
+            tmp = TOKEN_CACHE.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"username": self.username, "token": self.token}))
+            os.chmod(tmp, 0o600)  # it is a credential
+            os.replace(tmp, TOKEN_CACHE)
+        except OSError as exc:
+            log.warning("Could not cache token: %s", exc)
 
     def _auth_headers(self) -> dict[str, str]:
         if not self.token:
@@ -116,11 +188,13 @@ class DelcomClient:
             "x-custom-lang": "de",
         }
 
-    def login(self) -> dict[str, Any]:
-        """Perform the FH Münster Shibboleth SSO flow and store the token."""
-        if not self.username or not self.password:
-            raise LoginError("Missing username/password")
+    def _sso_flow(self) -> tuple[str | None, str, str]:
+        """Walk the Shibboleth form chain once.
 
+        Returns ``(token_blob | None, final_url, final_page_text)``. Starts from
+        a clean cookie jar so a retry is not polluted by a half-finished attempt.
+        """
+        self.session.cookies.clear()
         r = self.session.get(
             f"{API_BASE}/saml/discovery-callback",
             params={
@@ -166,16 +240,46 @@ class DelcomClient:
 
         q = parse_qs(urlparse(r.url).query)
         blob = (q.get("tokenReponse") or q.get("tokenResponse") or [None])[0]
-        if not blob:
-            raise LoginError(
-                "SSO did not return a token — credentials wrong or flow changed"
-            )
-        self.token = json.loads(base64.b64decode(blob))
-        log.info("Logged in as %s", self.username)
-        return self.token
+        return blob, r.url, r.text
+
+    def login(self, retries: int = 1, backoff: float = 2.0) -> dict[str, Any]:
+        """Perform the FH Münster Shibboleth SSO flow and store the token.
+
+        Retries once by default: booking several courts back-to-back can make
+        the IdP answer a second, rapid login with a rate-limit / "already
+        authenticating" page (no token), which a short backoff clears. On a
+        genuine failure it logs the final URL and page so we can tell a rate
+        limit from an actually-changed flow.
+        """
+        if not self.username or not self.password:
+            raise LoginError("Missing username/password")
+
+        final_url = final_text = ""
+        for attempt in range(retries + 1):
+            blob, final_url, final_text = self._sso_flow()
+            if blob:
+                self.token = json.loads(base64.b64decode(blob))
+                self._save_token()
+                log.info("Logged in as %s", self.username)
+                return self.token
+            if attempt < retries:
+                log.warning(
+                    "SSO returned no token (final url=%s); retrying in %.1fs",
+                    final_url, backoff,
+                )
+                time.sleep(backoff)
+
+        snippet = " ".join(final_text.split())[:300]
+        log.error("SSO login failed for %s — final url=%s; page: %s",
+                  self.username, final_url, snippet)
+        raise LoginError(
+            f"SSO did not return a token after {retries + 1} attempt(s) — "
+            f"credentials wrong, rate-limited, or flow changed. Final URL: {final_url}"
+        )
 
     def ensure_login(self) -> None:
-        if self.token is None:
+        """Log in only when there is no usable (cached, unexpired) token."""
+        if not _token_valid(self.token):
             self.login()
 
     # -- requests -----------------------------------------------------------
@@ -214,6 +318,18 @@ class DelcomClient:
             json=body,
             timeout=self.timeout,
         )
+        if r.status_code == 401:
+            # cached token was rejected -> re-login once and retry (a 401 means
+            # the POST was not processed, so retrying cannot double-book)
+            self.token = None
+            self.ensure_login()
+            r = self.session.post(
+                f"{API_BASE}{path}",
+                headers=self._auth_headers(),
+                params=p,
+                json=body,
+                timeout=self.timeout,
+            )
         return r
 
     # -- domain endpoints ---------------------------------------------------

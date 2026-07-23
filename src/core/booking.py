@@ -19,41 +19,9 @@ from core.delcom import (
     slot_is_free,
     slot_local_time,
 )
+from core.dow import dow_set as _dow_set
 
 log = logging.getLogger(__name__)
-
-_DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-
-
-def _dow_set(expr: str) -> set[int]:
-    """Weekdays (Mon=0) matched by an APScheduler day_of_week expression
-    like 'mon', 'mon-fri', 'sat,sun' or '*'. Falls back to every day if the
-    expression cannot be parsed."""
-    try:
-        days: set[int] = set()
-        for token in expr.lower().split(","):
-            token = token.strip()
-            if token == "*":
-                return set(range(7))
-            if "-" in token:
-                a, b = (
-                    int(t) % 7 if t.strip().isdigit() else _DOW[t.strip()]
-                    for t in token.split("-", 1)
-                )
-                d = a
-                while True:
-                    days.add(d)
-                    if d == b:
-                        break
-                    d = (d + 1) % 7
-            elif token.isdigit():
-                days.add(int(token) % 7)
-            else:
-                days.add(_DOW[token])
-        return days
-    except (KeyError, ValueError):
-        log.warning("Cannot parse day-of-week expression %r", expr)
-        return set(range(7))
 
 
 def _next_target_date(job: db.Job) -> date:
@@ -121,11 +89,17 @@ def execute_booking(
     allowed_court_ids: Iterable[int] | None = None,
     dry_run: bool = False,
     job_id: int | None = None,
+    client: DelcomClient | None = None,
+    member: dict | None = None,
 ) -> tuple[str, str]:
     """Make one booking pass. Returns ``(status, message)``.
 
     ``allowed_court_ids`` restricts booking to those courts (an activity like
     tennis 126 spans several locations; the court set selects one).
+
+    ``client``/``member`` let a caller pass an already-authenticated session
+    (the scheduled worker pre-warms the login so it is off the critical path);
+    when omitted, a fresh login happens here as before.
 
     Queries the slots once and books immediately; the only fallback is
     trying the next free court when the server rejects one as blocked.
@@ -145,10 +119,12 @@ def execute_booking(
             log.warning("Could not record attempt in database: %s", exc)
         log.info("Attempt job=%s status=%s: %s", job_id, status, message)
 
-    client = DelcomClient(DELCOM_USERNAME, DELCOM_PASSWORD)
+    if client is None:
+        client = DelcomClient(DELCOM_USERNAME, DELCOM_PASSWORD)
     try:
-        client.login()
-        member = client.get_member()
+        if member is None:
+            client.ensure_login()  # reuses the cached ~7-day token when valid
+            member = client.get_member()
     except Exception as exc:  # noqa: BLE001
         message = f"Login/member failed: {exc}"
         record("error", message)

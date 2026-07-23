@@ -4,7 +4,9 @@ Books courts on [hochschulsportmuenster.de](https://hochschulsportmuenster.de) t
 instant the booking window opens (e.g. grab a tennis court exactly one week ahead).
 
 - **SSO** via FH Münster Shibboleth — no headless browser, just `requests` + BeautifulSoup.
-- **Scheduling** with APScheduler (cron triggers, Europe/Berlin).
+- **Scheduling** with systemd --user timers, one per job (scale-to-zero — nothing
+  runs between grabs). Each timer fires a minute early so the worker can pre-warm the
+  login and then spin-wait to the exact window second (Europe/Berlin).
 - **Web dashboard** with FastAPI + Jinja2 templates (Pico CSS + HTMX), protected by
   HTTP Basic Auth — manage jobs, run tests, browse history, query live slots.
 - **PostgreSQL** stores the scheduled jobs and every booking attempt (raw `psycopg`).
@@ -39,13 +41,21 @@ Europe/Berlin local times and get converted.
 ### Scheduling model
 
 A **job** says *“book the slot `offset` days ahead at `slot_start_time`, and fire the
-attempt on this cron schedule.”* Because a court opens exactly `offset` days before
-the slot, you point the cron trigger at the moment the window opens:
+attempt on these weekdays at this time.”* Because a court opens exactly `offset` days
+before the slot, you point the fire time at the moment the window opens:
 
 > Want a **Saturday 15:00** court, booked **7 days** ahead?
-> Set `offset = 7`, fire on **Saturday 00:01**. When it fires it computes
-> `target = today + 7 days`, queries the 15:00 slots once, and immediately books the
-> first free court (or your preferred court id).
+> Set `offset = 7`, fire on **Saturday 00:00**. It computes `target = today + 7 days`,
+> queries the 15:00 slots once, and immediately books the first free court (or your
+> preferred court id).
+
+Each enabled job becomes a `hsp-book@<id>.timer`. To keep the grab instant, the timer
+is set to fire **one minute before** the window (the `OnCalendar` is computed from the
+job's weekdays/time, shifting across midnight when needed). The worker
+(`core/worker.py`) uses that lead to log in, then **spin-waits to the exact window
+second** and books with the already-authenticated session — so neither the process
+cold-start nor the (slow) login sits on the critical path. Changing a job in the
+dashboard re-syncs its timer automatically.
 
 ## Setup
 
@@ -91,21 +101,34 @@ HOST = "127.0.0.1"
 PORT = 8000
 ```
 
-## Usage
+## Deployment (systemd, scale-to-zero)
 
-Start the server (web dashboard + scheduler):
+Scheduling and serving are handled by **systemd --user units**, so nothing of ours
+stays resident when idle:
+
+- each enabled job → a `hsp-book@<id>.timer` firing a short-lived pre-warming worker;
+- the dashboard is **socket-activated** — `hsp-web.socket` starts the app on the first
+  request, and the app shuts itself down after 10 min idle (`HSP_WEB_IDLE_TIMEOUT`).
 
 ```bash
-# honors HOST/PORT from src/config.py
-uv run src/main.py
-
-# or with the uvicorn CLI — it ignores HOST/PORT (defaults to 127.0.0.1:8000),
-# so pass the bind address explicitly:
-uv run uvicorn web.app:app --app-dir src --host 0.0.0.0 --port 8004
+uv run python src/cli.py install   # write the units + a timer per saved job
+uv run python src/cli.py enable     # enable + start the web socket
+uv run python src/cli.py status     # list job timers + web-UI status
+uv run python src/cli.py logs -f    # tail worker + web logs
 ```
 
-Open the dashboard at the address you bound and log in with your
-`DASHBOARD_USER` / `DASHBOARD_PASS` credentials.
+> **Enable lingering** so timers fire even when you are not logged in:
+> `sudo loginctl enable-linger "$USER"` (on managed hosts like Uberspace it is
+> already on). Run `sync` after pulling code changes to rewrite the units.
+
+For a quick manual/dev run without systemd (stays up, no idle-shutdown):
+
+```bash
+uv run src/main.py                          # honors HOST/PORT from src/config.py
+uv run python src/cli.py web                # same, via the CLI
+```
+
+Open the dashboard and log in with your `DASHBOARD_USER` / `DASHBOARD_PASS` credentials.
 
 From the dashboard you can:
 
@@ -122,22 +145,24 @@ From the dashboard you can:
 
 ### CLI
 
-For quick one-off bookings without the web interface:
+The `hsp` CLI (`uv run python src/cli.py <command>`) has booking, web, and service
+commands. For quick one-off bookings without the web interface, use `book`:
 
 ```bash
 # book a tennis court 7 days from today at 15:00, any free court
-uv run src/cli.py --offset 7 --time 15:00
+uv run python src/cli.py book --offset 7 --time 15:00
 
 # specific court on a specific date, dry run (stops before booking)
-uv run src/cli.py --activity 126 --court 110 --date 2026-07-20 --time 15:00 --dry-run
+uv run python src/cli.py book --activity 126 --court 110 --date 2026-07-20 --time 15:00 --dry-run
 
 # just list the slots for a day (availability + court ids)
-uv run src/cli.py --offset 7 --list
+uv run python src/cli.py book --offset 7 --list
 ```
 
-Known activity ids are listed with `uv run src/cli.py --help`. CLI attempts are
-recorded in the history like scheduled ones (skipped with a warning if
-PostgreSQL isn't running).
+Other commands: `jobs` (list saved jobs), `run-job <id>` (fire a saved job — the
+timer uses this), and the service commands above. Known activity ids are listed with
+`uv run python src/cli.py book --help`. CLI attempts are recorded in the history like
+scheduled ones (skipped with a warning if PostgreSQL isn't running).
 
 ## Product ids (tennis)
 
@@ -165,12 +190,14 @@ hochschulsport-muenster-delcom/
     │
     ├── core/
     │   ├── delcom.py           # Delcom backbone API client (SSO login, slots, booking)
-    │   ├── booking.py          # Booking engine: executes a job, records the attempt
-    │   ├── db.py               # PostgreSQL access (jobs + attempt history)
-    │   └── scheduler.py        # APScheduler job management
+    │   ├── booking.py          # Booking engine: one pass, records the attempt
+    │   ├── worker.py           # Scheduled worker: pre-warm login, spin-wait, grab
+    │   ├── dow.py              # Weekday-expression + next-window helpers (dependency-light)
+    │   ├── systemd.py          # Generate per-job timers (fire early) + web units
+    │   └── db.py               # PostgreSQL access (jobs + attempt history)
     │
     └── web/
-        ├── app.py              # FastAPI app with scheduler lifespan
+        ├── app.py              # FastAPI app (socket-activated, idle-shutdown)
         ├── auth.py             # HTTP Basic Auth
         ├── routes/
         │   ├── dashboard.py    # GET /
@@ -182,7 +209,14 @@ hochschulsport-muenster-delcom/
 
 ## Notes
 
-- The bearer token is long-lived (~7 days); the client re-logs in automatically on 401.
-- Run a single instance — the scheduler runs in-process and `main.py` starts
-  uvicorn without `--reload` so triggers aren't duplicated.
-- For production, put it behind a process manager (systemd/supervisor) and a reverse proxy.
+- The bearer token is long-lived (~7 days) and is **cached to
+  `~/.cache/hsp-delcom/token.json`** (override with `HSP_TOKEN_CACHE`), so
+  back-to-back bookings and separate timer-fired processes reuse one login
+  instead of re-running the SSO flow — repeated rapid logins are what make the
+  IdP answer with no token. The client re-logs in automatically when the token
+  is missing/expired or a request returns 401, and `login()` retries once with a
+  short backoff, logging the final page if it still fails.
+- Scheduling is owned by systemd timers, not an in-process scheduler, so the web UI
+  can come and go freely — there is no long-running process to keep single.
+- Put the socket-activated web UI behind your reverse proxy (on Uberspace, a
+  `uberspace web backend` pointed at the configured `PORT`).
