@@ -17,8 +17,9 @@ from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
 Unavailable = (psycopg.OperationalError, PoolTimeout)
 
 # This bot is a guest in a database shared with other projects: it owns only the
-# hsp_booking_jobs and hsp_booking_attempts tables and must never read, write or
-# alter anything else. Any table added here carries the same hsp_ prefix.
+# hsp_booking_jobs, hsp_booking_attempts, hsp_credentials and hsp_consumed_tokens
+# tables and must never read, write or alter anything else. Any table added here
+# carries the same hsp_ prefix.
 
 
 @dataclass
@@ -53,6 +54,18 @@ class Attempt:
     booking_id: int | None
     raw: str | None
     cancelled_at: datetime | None
+
+
+@dataclass
+class Credential:
+    """A registered WebAuthn passkey. ``credential_id`` is base64url text."""
+    credential_id: str
+    public_key: bytes
+    sign_count: int
+    transports: str | None
+    label: str | None
+    created_at: datetime
+    last_used_at: datetime | None
 
 
 def _conninfo(dbname: str) -> str:
@@ -96,7 +109,7 @@ def init_db() -> None:
     """Create this bot's tables in the pre-existing, shared database.
 
     Never creates or drops a database, and only ever issues CREATE TABLE IF NOT
-    EXISTS for the two hsp_ tables it owns — a table without that prefix belongs
+    EXISTS for the hsp_ tables it owns — a table without that prefix belongs
     to another project.
 
     Uses a direct connection (not the pool) so the pool is only ever opened
@@ -150,7 +163,82 @@ def init_db() -> None:
                 cancelled_at    TIMESTAMPTZ
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS hsp_credentials (
+                credential_id   TEXT PRIMARY KEY,
+                public_key      BYTEA NOT NULL,
+                sign_count      BIGINT NOT NULL DEFAULT 0,
+                transports      VARCHAR(255),
+                label           VARCHAR(255),
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_used_at    TIMESTAMPTZ
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS hsp_consumed_tokens (
+                token_hash  TEXT PRIMARY KEY,
+                consumed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
     conn.close()
+
+
+# ── Spent enrolment tokens ───────────────────────────────────────────────────
+
+def token_consumed(token_hash: str) -> bool:
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM hsp_consumed_tokens WHERE token_hash = %s", (token_hash,))
+        return cur.fetchone() is not None
+
+
+def consume_token(token_hash: str) -> None:
+    """Burn an enrolment token so the same link cannot be replayed."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO hsp_consumed_tokens (token_hash) VALUES (%s)
+               ON CONFLICT (token_hash) DO NOTHING""",
+            (token_hash,),
+        )
+
+
+# ── WebAuthn credentials ─────────────────────────────────────────────────────
+
+def get_credentials() -> list[Credential]:
+    with get_connection() as conn, conn.cursor(row_factory=class_row(Credential)) as cur:
+        cur.execute("SELECT * FROM hsp_credentials ORDER BY created_at")
+        return cur.fetchall()
+
+
+def get_credential(credential_id: str) -> Credential | None:
+    with get_connection() as conn, conn.cursor(row_factory=class_row(Credential)) as cur:
+        cur.execute("SELECT * FROM hsp_credentials WHERE credential_id = %s", (credential_id,))
+        return cur.fetchone()
+
+
+def add_credential(credential_id: str, public_key: bytes, sign_count: int,
+                   transports: str | None, label: str | None) -> None:
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO hsp_credentials
+               (credential_id, public_key, sign_count, transports, label)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (credential_id, public_key, sign_count, transports, label),
+        )
+
+
+def touch_credential(credential_id: str, sign_count: int) -> None:
+    """Record a successful login: bump the replay counter and the last-used stamp."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE hsp_credentials SET sign_count = %s, last_used_at = now() "
+            "WHERE credential_id = %s",
+            (sign_count, credential_id),
+        )
+
+
+def delete_credential(credential_id: str) -> None:
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM hsp_credentials WHERE credential_id = %s", (credential_id,))
 
 
 # ── Jobs CRUD ────────────────────────────────────────────────────────────────

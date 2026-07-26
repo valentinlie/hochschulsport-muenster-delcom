@@ -8,7 +8,7 @@ instant the booking window opens (e.g. grab a tennis court exactly one week ahea
   runs between grabs). Each timer fires a minute early so the worker can pre-warm the
   login and then spin-wait to the exact window second (Europe/Berlin).
 - **Web dashboard** with FastAPI + Jinja2 templates (Pico CSS + HTMX), protected by
-  HTTP Basic Auth — manage jobs, run tests, browse history, query live slots.
+  a passkey (WebAuthn) — manage jobs, run tests, browse history, query live slots.
 - **PostgreSQL** stores the scheduled jobs and every booking attempt (raw `psycopg`).
   The database must already exist — point `DB_NAME` in `config.py` at it. All tables the
   bot owns are prefixed `hsp_` (`hsp_booking_jobs`, `hsp_booking_attempts`) and created
@@ -92,9 +92,24 @@ DB_NAME = "delcom_bot"
 DB_USER = "your_db_user"
 DB_PASS = "your_db_password"
 
-# ── Dashboard credentials (HTTP Basic Auth) ───────────────────────────────────
-DASHBOARD_USER = "admin"
-DASHBOARD_PASS = "change_me"
+# ── Dashboard login (WebAuthn / passkey) ──────────────────────────────────────
+# False drops authentication entirely and leaves the dashboard open — handy for
+# a purely local run. Everything below is then unused. See "Passkeys".
+AUTH_ENABLED = True
+
+# RP_ID is the bare hostname the dashboard is served from — no scheme, no port.
+# ORIGIN is the full origin your browser shows. The site must be HTTPS.
+RP_ID = "hsp.example.de"
+RP_NAME = "Hochschulsport Münster Bot"
+ORIGIN = "https://hsp.example.de"
+
+# python -c "import secrets; print(secrets.token_urlsafe(32))"
+SESSION_SECRET = "change_me"
+SESSION_MAX_AGE = 30 * 24 * 3600
+
+# Single-use enrolment token: /passkeys?token=<value>. Empty closes enrolment
+# to everyone but an already signed-in session.
+REGISTRATION_TOKEN = ""
 
 # ── Server ────────────────────────────────────────────────────────────────────
 HOST = "127.0.0.1"
@@ -128,7 +143,10 @@ uv run src/main.py                          # honors HOST/PORT from src/config.p
 uv run python src/cli.py web                # same, via the CLI
 ```
 
-Open the dashboard and log in with your `DASHBOARD_USER` / `DASHBOARD_PASS` credentials.
+Open the dashboard behind your HTTPS reverse proxy (the host you set as
+`ORIGIN`) and unlock it with your **passkey**. To enrol the first key, set
+`REGISTRATION_TOKEN` in `config.py` and visit
+`https://hsp.valentinl.de/passkeys?token=<token>` — see [Passkeys](#passkeys).
 
 From the dashboard you can:
 
@@ -164,6 +182,24 @@ timer uses this), and the service commands above. Known activity ids are listed 
 `uv run python src/cli.py book --help`. CLI attempts are recorded in the history like
 scheduled ones (skipped with a warning if PostgreSQL isn't running).
 
+## Passkeys
+
+The dashboard authenticates with WebAuthn ([py_webauthn](https://github.com/duo-labs/py_webauthn)) — no password anywhere. Keys live in the `hsp_credentials` table.
+
+**Turning auth off.** For a purely local run, set `AUTH_ENABLED = False` in `config.py`. The dashboard is then served with no login at all: `/login` and `/passkeys` redirect to the dashboard, the ceremony endpoints return 404, and the Passkeys/Log out controls disappear. Your registered keys stay in the database untouched, so flipping it back to `True` restores exactly where you left off. The app logs a warning on every start while it is off — only do this when the dashboard is not reachable from the network.
+
+**Requirements.** WebAuthn only runs in a secure context, so the dashboard must be served over **HTTPS** (the sole exception browsers make is `localhost`). `RP_ID` must equal the hostname exactly — `hsp.example.de`, not `https://hsp.example.de` and not `hsp.example.de:8000`. A passkey is cryptographically bound to `RP_ID`, so if you later move the dashboard to a different hostname you must register a new one.
+
+**Enrolling a key.** There is no anonymous enrolment — a fresh deployment is never up for grabs. Registering requires either an already signed-in session or the `REGISTRATION_TOKEN` from `config.py`, passed as `https://hsp.valentinl.de/passkeys?token=<token>`. The token is validated once, remembered in the session, then dropped from the URL by a redirect; registering spends the unlock and signs you in. A wrong token is logged and changes nothing. The token is **single-use**: registering with it records its SHA-256 in `hsp_consumed_tokens` and the link stops working, so it cannot be replayed out of your browser history or the reverse proxy's access log. Adding further keys while signed in does not spend it. To enrol again, put a new value in `config.py`.
+
+**Managing keys.** Once signed in, the *Passkeys* nav entry lists the registered keys and lets you add or remove them — no token needed while signed in. Adding a second one (e.g. your phone as well as your laptop) is worth doing.
+
+**Locked out?** Set a fresh `REGISTRATION_TOKEN` in `config.py`, restart, and enrol again via `/passkeys?token=...`. Only if you also want to clear the old keys:
+
+```bash
+psql -d vali -c "DELETE FROM hsp_credentials"
+```
+
 ## Product ids (tennis)
 
 | id  | name |
@@ -198,7 +234,7 @@ hochschulsport-muenster-delcom/
     │
     └── web/
         ├── app.py              # FastAPI app (socket-activated, idle-shutdown)
-        ├── auth.py             # HTTP Basic Auth
+        ├── auth.py             # Passkey (WebAuthn) login + session guard
         ├── routes/
         │   ├── dashboard.py    # GET /
         │   ├── jobs.py         # Job CRUD + manual/dry run

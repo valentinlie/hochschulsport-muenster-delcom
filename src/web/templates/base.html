@@ -130,11 +130,21 @@
         <ul>
             <li><strong>Hochschulsport Münster Bot</strong></li>
         </ul>
+        {% if is_authenticated(request) %}
         <ul>
             <li><a href="/" {% if active_page=="dashboard" %}class="active" {% endif %}>Dashboard</a></li>
             <li><a href="/history" {% if active_page=="history" %}class="active" {% endif %}>History</a></li>
             <li><a href="/slots" {% if active_page=="slots" %}class="active" {% endif %}>Live slots</a></li>
+            {% if auth_enabled %}
+            <li><a href="/passkeys" {% if active_page=="passkeys" %}class="active" {% endif %}>Passkeys</a></li>
+            <li>
+                <form action="/logout" method="post" style="margin: 0;">
+                    <button type="submit" class="secondary outline" style="padding: 0.25rem 0.6rem;">Log out</button>
+                </form>
+            </li>
+            {% endif %}
         </ul>
+        {% endif %}
     </nav>
     <main class="container">
         {% block content %}{% endblock %}

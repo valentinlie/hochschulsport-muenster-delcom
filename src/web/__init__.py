@@ -7,8 +7,9 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 
 from core import db
-from config import ACTIVITIES, ACTIVITY_OPTIONS
+from config import ACTIVITIES, ACTIVITY_OPTIONS, AUTH_ENABLED
 from core.dow import next_window
+from web.auth import is_authenticated
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -22,6 +23,10 @@ def _fmt_dt(value) -> str:
 
 
 templates.env.filters["dt"] = _fmt_dt
+# base.html only draws the nav for a signed-in visitor; ctx() has no request, so
+# the templates ask directly.
+templates.env.globals["is_authenticated"] = is_authenticated
+templates.env.globals["auth_enabled"] = AUTH_ENABLED
 
 
 def ctx(**kwargs) -> dict:
