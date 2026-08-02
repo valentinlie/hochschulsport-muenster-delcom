@@ -5,8 +5,9 @@ instant the booking window opens (e.g. grab a tennis court exactly one week ahea
 
 - **SSO** via FH Münster Shibboleth — no headless browser, just `requests` + BeautifulSoup.
 - **Scheduling** with systemd --user timers, one per job (scale-to-zero — nothing
-  runs between grabs). Each timer fires a minute early so the worker can pre-warm the
-  login and then spin-wait to the exact window second (Europe/Berlin).
+  runs between grabs). The fire time follows from the slot time — courts open per slot,
+  a few minutes past their own hour — and each timer fires a minute early so the worker
+  can pre-warm the login and then spin-wait to the exact window second (Europe/Berlin).
 - **Web dashboard** with FastAPI + Jinja2 templates (Pico CSS + HTMX), protected by
   a passkey (WebAuthn) — manage jobs, run tests, browse history, query live slots.
 - **PostgreSQL** stores the scheduled jobs and every booking attempt (raw `psycopg`).
@@ -40,14 +41,22 @@ Europe/Berlin local times and get converted.
 
 ### Scheduling model
 
-A **job** says *“book the slot `offset` days ahead at `slot_start_time`, and fire the
-attempt on these weekdays at this time.”* Because a court opens exactly `offset` days
-before the slot, you point the fire time at the moment the window opens:
+A **job** says *“book the slot `offset` days ahead at `slot_start_time`, firing on
+these weekdays.”* Courts are released **per slot, not per day**: the day's grid does
+not exist at midnight — each hour's courts appear `offset` days ahead, a few minutes
+past **their own hour** (observed: at 09:00 the day-7-ahead grid was still completely
+empty, then the hour-blocks showed up one at a time). So the fire *time* is not a free
+choice and the job derives it from the slot time — `WINDOW_OPEN_MINUTE = 5` past the
+slot's hour (`core/window.py`); you only pick the weekday:
 
 > Want a **Saturday 15:00** court, booked **7 days** ahead?
-> Set `offset = 7`, fire on **Saturday 00:00**. It computes `target = today + 7 days`,
-> queries the 15:00 slots once, and immediately books the first free court (or your
-> preferred court id).
+> Set `offset = 7` and fire on **Saturday**. The job fires itself at **15:05**,
+> computes `target = today + 7 days`, queries the 15:00 slots once, and immediately
+> books the first free court (or your preferred court id).
+
+The job form shows that derived time under an **Override time manually** checkbox;
+ticking it swaps in hour/minute fields and pins the job to them
+(`run_time_manual = true`) — for a slot whose window does not follow the rule.
 
 Each enabled job becomes a `hsp-book@<id>.timer`. To keep the grab instant, the timer
 is set to fire **one minute before** the window (the `OnCalendar` is computed from the
@@ -151,7 +160,9 @@ Open the dashboard behind your HTTPS reverse proxy (the host you set as
 From the dashboard you can:
 
 - **New job** — pick the activity product (126 = Tennisplatz Platzbuchung),
-  optionally a preferred court, the slot time, the `offset`, and the cron fire time.
+  optionally a preferred court, the slot time, the `offset`, and the fire weekday.
+  The fire time is derived from the slot time (see [Scheduling model](#scheduling-model));
+  the **Override time manually** checkbox pins your own hour/minute instead.
 - **Run Now** — books the job's **next occurring slot day** immediately (today
   counts if the slot time is still ahead). Unlike the scheduled run — which
   fires when the window opens and books `offset` days ahead — Run Now grabs
@@ -229,6 +240,7 @@ hochschulsport-muenster-delcom/
     │   ├── booking.py          # Booking engine: one pass, records the attempt
     │   ├── worker.py           # Scheduled worker: pre-warm login, spin-wait, grab
     │   ├── dow.py              # Weekday-expression + next-window helpers (dependency-light)
+    │   ├── window.py           # When a slot's booking window opens (HH:05 of the slot's hour)
     │   ├── systemd.py          # Generate per-job timers (fire early) + web units
     │   └── db.py               # PostgreSQL access (jobs + attempt history)
     │

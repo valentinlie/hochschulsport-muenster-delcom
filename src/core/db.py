@@ -11,6 +11,7 @@ from psycopg.rows import class_row, dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
+from core.window import window_open_time
 
 # What callers catch when postgres is unreachable (direct connect vs. pool
 # raise different exceptions).
@@ -35,9 +36,23 @@ class Job:
     slot_start_time: str
     date_offset: int
     run_dow: str
+    # run_hour/run_minute only apply when run_time_manual is set; otherwise the
+    # fire time is derived from slot_start_time (see the run_time property).
     run_hour: int
     run_minute: int
+    run_time_manual: bool
     created_at: datetime
+
+    @property
+    def run_time(self) -> tuple[int, int]:
+        """``(hour, minute)`` this job's booking window opens.
+
+        Derived from the slot time — a court is released a few minutes past its
+        own hour, ``date_offset`` days ahead — unless the job pins it manually.
+        """
+        if self.run_time_manual:
+            return self.run_hour, self.run_minute
+        return window_open_time(self.slot_start_time)
 
 
 @dataclass
@@ -144,6 +159,7 @@ def init_db() -> None:
                 run_dow             VARCHAR(30) NOT NULL DEFAULT '*',
                 run_hour            INT NOT NULL DEFAULT 0,
                 run_minute          INT NOT NULL DEFAULT 0,
+                run_time_manual     BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
@@ -249,8 +265,8 @@ def create_job(data: dict) -> int:
             """INSERT INTO hsp_booking_jobs
                (name, enabled, activity_product_id, activity_option,
                 preferred_court_id, slot_start_time, date_offset, run_dow,
-                run_hour, run_minute)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                run_hour, run_minute, run_time_manual)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (
                 data["name"],
@@ -263,6 +279,7 @@ def create_job(data: dict) -> int:
                 data.get("run_dow", "*"),
                 data.get("run_hour", 0),
                 data.get("run_minute", 0),
+                data.get("run_time_manual", False),
             ),
         )
         return cur.fetchone()["id"]
@@ -274,7 +291,7 @@ def update_job(job_id: int, data: dict) -> None:
             """UPDATE hsp_booking_jobs SET
                name=%s, enabled=%s, activity_product_id=%s, activity_option=%s,
                preferred_court_id=%s, slot_start_time=%s, date_offset=%s,
-               run_dow=%s, run_hour=%s, run_minute=%s
+               run_dow=%s, run_hour=%s, run_minute=%s, run_time_manual=%s
                WHERE id=%s""",
             (
                 data["name"],
@@ -287,6 +304,7 @@ def update_job(job_id: int, data: dict) -> None:
                 data.get("run_dow", "*"),
                 data.get("run_hour", 0),
                 data.get("run_minute", 0),
+                data.get("run_time_manual", False),
                 job_id,
             ),
         )

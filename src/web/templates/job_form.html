@@ -37,8 +37,8 @@
             </label>
             <label>
                 Slot start time (local)
-                <input name="slot_start_time" type="time" value="{{ job.slot_start_time if job else '15:00' }}"
-                    required>
+                <input id="slot-start-time" name="slot_start_time" type="time"
+                    value="{{ job.slot_start_time if job else '15:00' }}" required>
             </label>
         </div>
     </fieldset>
@@ -53,26 +53,46 @@
             <small>The booking window opens this many days before the slot. Tennis opens 7 days ahead.</small>
         </label>
 
-        <div class="grid">
-            <label>
-                Fire on
-                <select name="run_dow">
-                    {% for val, label in dow_choices %}
-                    <option value="{{ val }}" {{ "selected" if job and job.run_dow==val }}>{{ label }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                Hour
-                <input name="run_hour" type="number" min="0" max="23" value="{{ job.run_hour if job else 0 }}">
-            </label>
-            <label>
-                Minute
-                <input name="run_minute" type="number" min="0" max="59" value="{{ job.run_minute if job else 1 }}">
-            </label>
+        <label>
+            Fire on
+            <select name="run_dow">
+                {% for val, label in dow_choices %}
+                <option value="{{ val }}" {{ "selected" if job and job.run_dow==val }}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            <small>The weekday the window opens — with offset 7 that is the slot's own weekday.
+                For a <strong>Saturday</strong> 15:00 court booked 7 days ahead, fire on Saturday.</small>
+        </label>
+
+        <!-- The checkbox sits above both time blocks so it keeps its place when
+             toggling swaps them. -->
+        <label>
+            <input type="checkbox" name="run_time_manual" id="run-time-manual"
+                {{ "checked" if job and job.run_time_manual }}>
+            Override time manually
+        </label>
+
+        <div id="time-auto" {{ "hidden" if job and job.run_time_manual }}>
+            <p>Fires at <strong id="auto-time">--:--</strong> — courts are released per slot, a few minutes past
+                their own hour, so the time follows the slot time.</p>
         </div>
-        <small>Set the fire day/time to exactly when the window opens.
-            For a Saturday 15:00 court booked 7 days ahead (offset 7), fire on <strong>Saturday 00:01</strong>.</small>
+
+        <div id="time-manual" {{ "" if job and job.run_time_manual else "hidden" }}>
+            <div class="grid">
+                <label>
+                    Hour
+                    <input id="run-hour" name="run_hour" type="number" min="0" max="23"
+                        value="{{ job.run_hour if job else 0 }}">
+                </label>
+                <label>
+                    Minute
+                    <input id="run-minute" name="run_minute" type="number" min="0" max="59"
+                        value="{{ job.run_minute if job else window_open_minute }}">
+                </label>
+            </div>
+            <small>Fires at exactly this time on the day above. Only needed when the window does not
+                open a few minutes past the slot's hour.</small>
+        </div>
     </fieldset>
 
     <label>
@@ -85,4 +105,46 @@
         <a href="/" role="button" class="secondary outline">Cancel</a>
     </div>
 </form>
+
+<script>
+    // Mirror core/window.py: the hour's courts appear this many minutes past
+    // their own hour, so the fire time follows the slot time until overridden.
+    const WINDOW_OPEN_MINUTE = {{ window_open_minute }};
+    const slot = document.getElementById("slot-start-time");
+    const override = document.getElementById("run-time-manual");
+    const auto = document.getElementById("time-auto");
+    const manual = document.getElementById("time-manual");
+    const hourInput = document.getElementById("run-hour");
+    const minuteInput = document.getElementById("run-minute");
+    // Don't overwrite an override the user saved earlier or typed just now.
+    let manualEdited = override.checked;
+
+    function autoHour() {
+        const hour = parseInt((slot.value || "").split(":")[0], 10);
+        return Number.isNaN(hour) ? null : hour % 24;
+    }
+
+    function showAutoTime() {
+        const hour = autoHour();
+        document.getElementById("auto-time").textContent =
+            hour === null
+                ? "--:--"
+                : String(hour).padStart(2, "0") + ":" + String(WINDOW_OPEN_MINUTE).padStart(2, "0");
+    }
+
+    function setManual(on) {
+        if (on && !manualEdited && autoHour() !== null) {
+            hourInput.value = autoHour();      // start the override from the automatic time
+            minuteInput.value = WINDOW_OPEN_MINUTE;
+        }
+        auto.hidden = on;
+        manual.hidden = !on;
+    }
+
+    slot.addEventListener("input", showAutoTime);
+    hourInput.addEventListener("input", () => { manualEdited = true; });
+    minuteInput.addEventListener("input", () => { manualEdited = true; });
+    override.addEventListener("change", () => setManual(override.checked));
+    showAutoTime();
+</script>
 {% endblock %}

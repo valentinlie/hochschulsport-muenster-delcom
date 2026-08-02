@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from core import db
 from config import ACTIVITIES, ACTIVITY_OPTIONS, AUTH_ENABLED
 from core.dow import next_window
+from core.window import WINDOW_OPEN_MINUTE
 from web.auth import is_authenticated
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -27,6 +28,8 @@ templates.env.filters["dt"] = _fmt_dt
 # the templates ask directly.
 templates.env.globals["is_authenticated"] = is_authenticated
 templates.env.globals["auth_enabled"] = AUTH_ENABLED
+# The job form derives its fire time from the slot time in the browser too.
+templates.env.globals["window_open_minute"] = WINDOW_OPEN_MINUTE
 
 
 def ctx(**kwargs) -> dict:
@@ -35,9 +38,11 @@ def ctx(**kwargs) -> dict:
 
 def job_row(job: db.Job) -> dict:
     """A job plus the derived scheduling info the templates display."""
+    hour, minute = job.run_time
     return {
         "job": job,
+        "fire_time": f"{hour:02d}:{minute:02d}",
         # next time the booking window opens (None for a disabled job)
-        "next_run": next_window(job.run_dow, job.run_hour, job.run_minute) if job.enabled else None,
+        "next_run": next_window(job.run_dow, hour, minute) if job.enabled else None,
         "target_preview": (date.today() + timedelta(days=job.date_offset)).strftime("%a %d %b"),
     }

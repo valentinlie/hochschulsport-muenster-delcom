@@ -34,10 +34,12 @@ def run_job(job_id: int) -> str:
         log.info("Job %s is disabled, skipping", job_id)
         return "disabled"
 
-    # The window opens today at run_hour:run_minute; if that moment has already
-    # passed (e.g. a 00:00 window whose timer fired at 23:59), roll to tomorrow.
+    # The window opens today at the job's run time (derived from the slot hour
+    # unless overridden); if that moment has already passed (e.g. a 00:00 window
+    # whose timer fired at 23:59), roll to tomorrow.
     now = datetime.now(LOCAL_TZ)
-    window = now.replace(hour=job.run_hour, minute=job.run_minute, second=0, microsecond=0)
+    run_hour, run_minute = job.run_time
+    window = now.replace(hour=run_hour, minute=run_minute, second=0, microsecond=0)
     if window <= now:
         window += timedelta(days=1)
     target = window.date() + timedelta(days=job.date_offset)

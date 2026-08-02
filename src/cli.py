@@ -108,7 +108,8 @@ def cmd_jobs(_: argparse.Namespace) -> int:
     print(f"{'ID':>4}  {'ON':<3} {'ACTIVITY':<16} {'SLOT':<6} {'OFF':<4} {'FIRE':<16} NAME")
     for j in jobs:
         on = "yes" if j.enabled else "-"
-        fire = f"{j.run_dow} {j.run_hour:02d}:{j.run_minute:02d}"
+        hour, minute = j.run_time
+        fire = f"{j.run_dow} {hour:02d}:{minute:02d}{'' if j.run_time_manual else ' auto'}"
         act = (j.activity_option or str(j.activity_product_id))[:16]
         print(f"{j.id:>4}  {on:<3} {act:<16} {j.slot_start_time:<6} {j.date_offset:<4} {fire:<16} {j.name}")
     return 0

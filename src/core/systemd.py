@@ -68,7 +68,7 @@ def _fire_spec(day_set: set[int], run_hour: int, run_minute: int) -> tuple[set[i
 
 
 def _on_calendar(job: db.Job) -> str:
-    days, hour, minute = _fire_spec(dow_set(job.run_dow), job.run_hour, job.run_minute)
+    days, hour, minute = _fire_spec(dow_set(job.run_dow), *job.run_time)
     day_spec = ",".join(SYSTEMD_DAY[d] for d in sorted(days))
     return f"{day_spec} *-*-* {hour:02d}:{minute:02d}:00"
 

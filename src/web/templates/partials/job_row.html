@@ -13,8 +13,8 @@
         {{ job.slot_start_time }}
         {% if job.preferred_court_id %}(court {{ job.preferred_court_id }}){% else %}(any court){% endif %}
     </td>
-    <td>+{{ job.date_offset }}d ahead → {{ row.target_preview }}, fires {{ job.run_dow }} {{ "%02d"|format(job.run_hour)
-        }}:{{ "%02d"|format(job.run_minute) }}</td>
+    <td>+{{ job.date_offset }}d ahead → {{ row.target_preview }}, fires {{ job.run_dow }} {{ row.fire_time }}
+        {%- if not job.run_time_manual %} <small>(auto)</small>{% endif %}</td>
     <td>{{ row.next_run | dt }}</td>
     <td>
         {% if job.enabled %}

@@ -13,6 +13,7 @@ from core import db
 from core.booking import run_booking_job
 from core.dow import dow_valid
 from core.systemd import remove_job_timer, sync_job_timer
+from core.window import window_open_time
 from web import ctx, job_row, templates
 from web.auth import require_auth
 
@@ -43,9 +44,9 @@ def _validate(data: dict) -> str | None:
     if not 0 <= data["date_offset"] <= 60:
         return "Offset must be between 0 and 60 days."
     if not 0 <= data["run_hour"] <= 23:
-        return "Fire hour must be between 0 and 23."
+        return "Override hour must be between 0 and 23."
     if not 0 <= data["run_minute"] <= 59:
-        return "Fire minute must be between 0 and 59."
+        return "Override minute must be between 0 and 59."
     if not dow_valid(data["run_dow"]):
         return f"Invalid day-of-week expression: {data['run_dow']!r}."
     return None
@@ -100,11 +101,16 @@ def job_save(
     slot_start_time: str = Form("08:00"),
     date_offset: int = Form(7),
     run_dow: str = Form("*"),
+    run_time_manual: bool = Form(False),
     run_hour: int = Form(0),
     run_minute: int = Form(0),
     _user: str = Depends(require_auth),
 ):
     option = ACTIVITY_OPTIONS.get(activity_option)
+    if not run_time_manual:
+        # The window opens a few minutes past the slot's own hour; store the
+        # derived time so the saved row says what the timer will do.
+        run_hour, run_minute = window_open_time(slot_start_time)
     data = {
         "name": name.strip() or "Unnamed job",
         "enabled": enabled,
@@ -116,6 +122,7 @@ def job_save(
         "run_dow": run_dow,
         "run_hour": run_hour,
         "run_minute": run_minute,
+        "run_time_manual": run_time_manual,
     }
     error = None
     if option is None:
