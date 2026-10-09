@@ -14,11 +14,12 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import PORT
 from core import db
-from core.dow import SYSTEMD_DAY, dow_set
+from core.dow import LOCAL_TZ, SYSTEMD_DAY, dow_set
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]  # src/core/systemd.py -> repo
 UV = shutil.which("uv") or "uv"
 
 BOOK_TEMPLATE = "hsp-book@.service"
+COURSE_TEMPLATE = "hsp-course@.service"
 WEB_SOCKET = "hsp-web.socket"
 WEB_SERVICE = "hsp-web.service"
 
@@ -70,7 +72,8 @@ def _fire_spec(day_set: set[int], run_hour: int, run_minute: int) -> tuple[set[i
 def _on_calendar(job: db.Job) -> str:
     days, hour, minute = _fire_spec(dow_set(job.run_dow), *job.run_time)
     day_spec = ",".join(SYSTEMD_DAY[d] for d in sorted(days))
-    return f"{day_spec} *-*-* {hour:02d}:{minute:02d}:00"
+    # explicit zone: the window is Berlin time whatever the host's TZ is
+    return f"{day_spec} *-*-* {hour:02d}:{minute:02d}:00 Europe/Berlin"
 
 
 def sync_job_timer(job: db.Job | None) -> None:
@@ -111,9 +114,48 @@ def remove_job_timer(job_id: int) -> None:
     _systemctl("daemon-reload")
 
 
+def _course_timer_name(job_id: int) -> str:
+    return f"hsp-course@{job_id}.timer"
+
+
+def sync_course_timer(job: db.CourseJob) -> None:
+    """A one-shot timer LEAD_MINUTES before enrolment opens (a full date, so
+    it fires once and never again)."""
+    fire = job.opens_at.astimezone(LOCAL_TZ) - timedelta(minutes=LEAD_MINUTES)
+    on_calendar = fire.strftime("%Y-%m-%d %H:%M:%S") + " Europe/Berlin"
+    _write(_course_timer_name(job.id), f"""[Unit]
+Description=HSP course enrolment {job.id} ({job.name})
+
+[Timer]
+OnCalendar={on_calendar}
+AccuracySec=1s
+Persistent=false
+Unit=hsp-course@{job.id}.service
+
+[Install]
+WantedBy=timers.target
+""")
+    _systemctl("daemon-reload")
+    _systemctl("enable", "--now", _course_timer_name(job.id))
+    log.info("Synced course timer %d: OnCalendar=%s", job.id, on_calendar)
+
+
+def remove_course_timer(job_id: int) -> None:
+    name = _course_timer_name(job_id)
+    _systemctl("disable", "--now", name)
+    path = UNIT_DIR / name
+    if path.exists():
+        path.unlink()
+    _systemctl("daemon-reload")
+
+
 def sync_all_jobs() -> None:
     for job in db.get_all_jobs():
         sync_job_timer(job)
+    now = datetime.now(LOCAL_TZ)
+    for course_job in db.get_all_course_jobs():
+        if course_job.opens_at > now:  # past ones already fired
+            sync_course_timer(course_job)
 
 
 def install() -> None:
@@ -125,6 +167,14 @@ Description=HSP booking worker for job %i
 Type=oneshot
 WorkingDirectory={PROJECT_DIR}
 ExecStart={UV} run python src/cli.py run-job %i
+""")
+    _write(COURSE_TEMPLATE, f"""[Unit]
+Description=HSP course enrolment worker for job %i
+
+[Service]
+Type=oneshot
+WorkingDirectory={PROJECT_DIR}
+ExecStart={UV} run python src/cli.py run-course %i
 """)
     _write(WEB_SOCKET, f"""[Unit]
 Description=HSP booking web UI socket (on-demand)

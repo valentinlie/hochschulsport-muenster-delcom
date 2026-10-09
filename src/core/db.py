@@ -18,7 +18,7 @@ from core.window import window_open_time
 Unavailable = (psycopg.OperationalError, PoolTimeout)
 
 # This bot is a guest in a database shared with other projects: it owns only the
-# hsp_booking_jobs, hsp_booking_attempts, hsp_credentials and hsp_consumed_tokens
+# hsp_booking_jobs, hsp_course_jobs, hsp_booking_attempts, hsp_credentials and hsp_consumed_tokens
 # tables and must never read, write or alter anything else. Any table added here
 # carries the same hsp_ prefix.
 
@@ -53,6 +53,16 @@ class Job:
         if self.run_time_manual:
             return self.run_hour, self.run_minute
         return window_open_time(self.slot_start_time)
+
+
+@dataclass
+class CourseJob:
+    """A one-off grab: enrol in ``course_id`` the second enrolment opens."""
+    id: int
+    name: str
+    course_id: int
+    opens_at: datetime  # course startDateEnrollment at the time it was scheduled
+    created_at: datetime
 
 
 @dataclass
@@ -177,6 +187,15 @@ def init_db() -> None:
                 booking_id      INT,
                 raw             TEXT,
                 cancelled_at    TIMESTAMPTZ
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS hsp_course_jobs (
+                id          SERIAL PRIMARY KEY,
+                name        VARCHAR(200) NOT NULL,
+                course_id   INT NOT NULL,
+                opens_at    TIMESTAMPTZ NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         cur.execute("""
@@ -336,6 +355,35 @@ def toggle_job(job_id: int) -> bool:
         )
         row = cur.fetchone()
         return bool(row["enabled"]) if row else False
+
+
+# ── Course jobs (one-off enrolment grabs) ────────────────────────────────────
+
+def create_course_job(name: str, course_id: int, opens_at: datetime) -> int:
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO hsp_course_jobs (name, course_id, opens_at)
+               VALUES (%s, %s, %s) RETURNING id""",
+            (name, course_id, opens_at),
+        )
+        return cur.fetchone()["id"]
+
+
+def get_course_job(job_id: int) -> CourseJob | None:
+    with get_connection() as conn, conn.cursor(row_factory=class_row(CourseJob)) as cur:
+        cur.execute("SELECT * FROM hsp_course_jobs WHERE id = %s", (job_id,))
+        return cur.fetchone()
+
+
+def get_all_course_jobs() -> list[CourseJob]:
+    with get_connection() as conn, conn.cursor(row_factory=class_row(CourseJob)) as cur:
+        cur.execute("SELECT * FROM hsp_course_jobs ORDER BY opens_at DESC, id DESC")
+        return cur.fetchall()
+
+
+def delete_course_job(job_id: int) -> None:
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM hsp_course_jobs WHERE id = %s", (job_id,))
 
 
 # ── Attempt history ──────────────────────────────────────────────────────────

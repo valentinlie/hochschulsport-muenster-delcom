@@ -96,6 +96,50 @@ def cmd_run_job(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_courses(args: argparse.Namespace) -> int:
+    """List courses whose enrolment hasn't closed (public data, no login)."""
+    from core.courses import opens_at
+    from core.delcom import DelcomClient, _to_local
+
+    client = DelcomClient("", "")
+    tags = [int(t) for t in args.tags.split(",") if t.strip()]
+    courses = client.get_courses(client.course_product_ids(tags))
+    if not courses:
+        print("No open courses for those tags.")
+        return 1
+    print(f"{'ID':>5}  {'START':<16} {'ENROLMENT OPENS':<16} {'FREE':>4}  NAME")
+    for c in courses:
+        start = _to_local(c["startDate"]).strftime("%a %d.%m. %H:%M")
+        opens = opens_at(c).strftime("%d.%m.%y %H:%M")
+        print(f"{c['id']:>5}  {start:<16} {opens:<16} {c['availableParticipantCount']:>4}  "
+              f"{c['description'].strip()}")
+    return 0
+
+
+def cmd_book_course(args: argparse.Namespace) -> int:
+    """Enrol in a course right now (no waiting for the opening)."""
+    from core.courses import book_course
+
+    status, message = book_course(
+        args.id, retry_seconds=args.retry, dry_run=args.dry_run, pay=not args.no_pay
+    )
+    print(message)
+    return 0 if status in ("success", "dry_run") else 1
+
+
+def cmd_run_course(args: argparse.Namespace) -> int:
+    """Fire a scheduled course enrolment. Invoked by the course timer."""
+    from core import db
+    from core.courses import run_course_job
+
+    db.init_db()
+    try:
+        run_course_job(args.id)
+    finally:
+        db.close_pool()
+    return 0
+
+
 def cmd_jobs(_: argparse.Namespace) -> int:
     from core import db
 
@@ -165,13 +209,13 @@ def cmd_disable(_: argparse.Namespace) -> int:
 
 
 def cmd_status(_: argparse.Namespace) -> int:
-    _systemctl("list-timers", "hsp-book@*", "--all")
+    _systemctl("list-timers", "hsp-book@*", "hsp-course@*", "--all")
     return _systemctl("status", "--no-pager", WEB_SOCKET, WEB_SERVICE)
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
     cmd = ["journalctl", "--user", "-n", str(args.lines),
-           "-u", WEB_SERVICE, "-u", "hsp-book@*"]
+           "-u", WEB_SERVICE, "-u", "hsp-book@*", "-u", "hsp-course@*"]
     if args.follow:
         cmd.append("-f")
     return subprocess.run(cmd).returncode
@@ -214,6 +258,25 @@ def main() -> int:
     p_run.set_defaults(func=cmd_run_job)
 
     sub.add_parser("jobs", help="List saved jobs").set_defaults(func=cmd_jobs)
+
+    # courses: one-off enrolment
+    p_courses = sub.add_parser("courses", help="List courses still open for enrolment")
+    p_courses.add_argument("--tags", default="259",
+                           help="Shop tag ids, comma-separated (default: 259 = Tennis Kurse)")
+    p_courses.set_defaults(func=cmd_courses)
+
+    p_bc = sub.add_parser("book-course", help="Enrol in a course now")
+    p_bc.add_argument("id", type=int, help="Course id (see `hsp courses`)")
+    p_bc.add_argument("--retry", type=float, default=0.0,
+                      help="Keep retrying this many seconds (default: one try)")
+    p_bc.add_argument("--dry-run", action="store_true", help="Build the request, don't send it")
+    p_bc.add_argument("--no-pay", action="store_true",
+                      help="Only reserve (pending sale); don't pay by direct debit")
+    p_bc.set_defaults(func=cmd_book_course)
+
+    p_rc = sub.add_parser("run-course", help="Fire a scheduled course enrolment (timer)")
+    p_rc.add_argument("id", type=int, help="Course job id")
+    p_rc.set_defaults(func=cmd_run_course)
 
     # web
     p_web = sub.add_parser("web", help="Serve the dashboard")

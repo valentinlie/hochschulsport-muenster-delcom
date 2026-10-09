@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Courses - Hochschulsport Münster Bot{% endblock %}
+
+{% block content %}
+<h2>Courses</h2>
+<p>One-off enrolment: <strong>Schedule</strong> grabs a spot the second enrolment opens (the bot wakes a
+    minute early, logs in, then fires on the exact second and retries for a minute). A paid course is then
+    <strong>paid right away by SEPA direct debit</strong> with your saved mandate; if that fails the spot
+    stays reserved as a pending sale — pay it on the site (link in the history).</p>
+
+<h3>Scheduled</h3>
+{% if jobs %}
+<table>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Course</th>
+            <th>Enrolment opens</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for j in jobs %}
+        <tr id="course-job-{{ j.id }}">
+            <td>{{ j.id }}</td>
+            <td>{{ j.name }}</td>
+            <td>{{ j.opens_at | dt }}{% if j.opens_at < now %} <small>(fired)</small>{% endif %}</td>
+            <td class="actions">
+                <button hx-post="/course-jobs/{{ j.id }}/delete" hx-target="#course-job-{{ j.id }}"
+                    hx-swap="outerHTML" class="outline secondary">Delete</button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>Nothing scheduled.</p>
+{% endif %}
+
+<h3>Open for enrolment</h3>
+<form method="get" action="/courses">
+    <label>
+        Shop tag ids
+        <input name="tags" value="{{ tags }}">
+        <small>The <code>tags=</code> of the shop's course list URL — 259 = Tennis Kurse.</small>
+    </label>
+    <button type="submit">Show courses</button>
+</form>
+
+{% if error %}
+<div role="alert" class="alert-error">{{ error }}</div>
+{% endif %}
+
+{% if rows %}
+<table>
+    <thead>
+        <tr>
+            <th>Id</th>
+            <th>Course</th>
+            <th>Starts</th>
+            <th>Enrolment opens</th>
+            <th>Spots</th>
+            <th>Price</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in rows %}
+        <tr>
+            <td>{{ c.id }}</td>
+            <td>{{ c.name }}</td>
+            <td>{{ c.start | dt }}</td>
+            <td>{{ c.opens | dt }}</td>
+            <td>
+                {% if c.free > 0 %}<span class="badge badge-success">{{ c.free }} free</span>
+                {% else %}<span class="badge badge-failed">full</span>{% endif %}
+            </td>
+            <td>{{ c.price if c.price is not none else "—" }} €</td>
+            <td class="actions">
+                {% if not c.is_open %}
+                {% if c.id in scheduled %}<span class="badge badge-enabled">scheduled</span>
+                {% else %}
+                <form method="post" action="/courses/{{ c.id }}/schedule?tags={{ tags }}">
+                    <button type="submit" class="outline">Schedule</button>
+                </form>
+                {% endif %}
+                {% elif c.free > 0 %}
+                <button hx-post="/courses/{{ c.id }}/book" hx-target="#course-result-{{ c.id }}"
+                    hx-swap="innerHTML" hx-confirm="Enrol in {{ c.name }} now?" class="outline">Book now</button>
+                {% endif %}
+                <span id="course-result-{{ c.id }}"></span>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% elif not error %}
+<p>No courses open for enrolment with those tags.</p>
+{% endif %}
+{% endblock %}

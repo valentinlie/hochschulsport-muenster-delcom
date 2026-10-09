@@ -12,7 +12,7 @@ instant the booking window opens (e.g. grab a tennis court exactly one week ahea
   a passkey (WebAuthn) — manage jobs, run tests, browse history, query live slots.
 - **PostgreSQL** stores the scheduled jobs and every booking attempt (raw `psycopg`).
   The database must already exist — point `DB_NAME` in `config.py` at it. All tables the
-  bot owns are prefixed `hsp_` (`hsp_booking_jobs`, `hsp_booking_attempts`) and created
+  bot owns are prefixed `hsp_` (`hsp_booking_jobs`, `hsp_course_jobs`, `hsp_booking_attempts`) and created
   on first startup, so the database can be shared with other projects.
 
 ## How it works
@@ -61,15 +61,53 @@ ticking it swaps in hour/minute fields and pins the job to them
 Each enabled job becomes a `hsp-book@<id>.timer`. To keep the grab instant, the timer
 is set to fire **one minute before** the window (the `OnCalendar` is computed from the
 job's weekdays/time, shifting across midnight when needed). The worker
-(`core/worker.py`) uses that lead to log in, then **spin-waits to the exact window
-second** and books with the already-authenticated session — so neither the process
-cold-start nor the (slow) login sits on the critical path. Changing a job in the
-dashboard re-syncs its timer automatically.
+(`core/worker.py`) uses that lead to log in and fetch the day's existing bookings
+(admin blocks), then **spin-waits to the exact window second** and books with the
+already-authenticated session — so only the slot query and the booking POST sit on
+the critical path. History rows and court names are written after the grab. If a
+booking POST gets no answer, the bot only retries while that court is provably still
+free and never moves on to another court (it could end up with two). Changing a job
+in the dashboard re-syncs its timer automatically.
+
+### Courses (one-off enrolment)
+
+Courses (e.g. the tennis courses under `/shop/courses/list?tags=259`) are not
+recurring: each has one fixed enrolment opening (`startDateEnrollment`, e.g.
+2026-10-08 10:00 for all tennis courses) and sells out within minutes.
+
+- **Catalogue** — `GET /courses/query/availableCourseTagsAndProductIds` maps the
+  shop's `tags=` to course product ids; `GET /courses` lists the courses. Both are
+  public (no login).
+- **Enrol** — `POST /sales` with the course as the only sale item: what the shop's
+  *In den Warenkorb* → *Checkout* does, minus the cart (the cart does **not** hold a
+  spot — checked: the free count doesn't move). A paid course comes back as a
+  **pending sale**.
+- **Pay** — right after the grab the bot pays that sale with your saved SEPA
+  direct-debit mandate (`POST /sales/<id>/pay`, the checkout's *Bezahlen*; the
+  mandate is whatever you saved on the site). One try only, never above the
+  course's list price. If there's no mandate or paying fails, the sale stays
+  pending: pay it on the site (*Complete your pending sale*, or the
+  `/sales/<id>/checkout` link in the history). `book-course --no-pay` only reserves.
+
+**Courses** in the dashboard lists the open courses for some tag ids. **Schedule**
+saves a one-off job and a `hsp-course@<id>.timer` firing a minute before the
+opening; the worker (`core/courses.py`) logs in and builds the request during that
+minute, re-touches the connection 2 s before, then POSTs on the exact second and
+keeps retrying for 60 s (the server clock may lag, and it errors under the rush),
+stopping early once the course reports 0 free spots. **Book now** (enrolment
+already open) does a single try.
+
+```bash
+uv run python src/cli.py courses --tags 259          # open tennis courses + ids
+uv run python src/cli.py book-course 1065 --dry-run  # show the request
+uv run python src/cli.py book-course 1065 --retry 30 # enrol + pay now, retry 30 s
+uv run python tests/test_courses.py                 # self-check (fake client, no money)
+```
 
 ## Setup
 
 Requires Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), and a running PostgreSQL
-server (the `delcom_bot` database itself is created automatically).
+server with an existing database (the bot only adds its `hsp_` tables to it).
 
 ### 1. Install Python dependencies
 
@@ -94,7 +132,7 @@ ACTIVITIES = {
     129: "Padel Tennis (Platzmiete)",
 }
 
-# ── PostgreSQL (database is created automatically on first startup) ──────────
+# ── PostgreSQL (the database must already exist; hsp_ tables are added) ─────
 DB_HOST = "localhost"
 DB_PORT = 5432
 DB_NAME = "delcom_bot"
@@ -155,7 +193,7 @@ uv run python src/cli.py web                # same, via the CLI
 Open the dashboard behind your HTTPS reverse proxy (the host you set as
 `ORIGIN`) and unlock it with your **passkey**. To enrol the first key, set
 `REGISTRATION_TOKEN` in `config.py` and visit
-`https://hsp.valentinl.de/passkeys?token=<token>` — see [Passkeys](#passkeys).
+`https://hsp.example.de/passkeys?token=<token>` — see [Passkeys](#passkeys).
 
 From the dashboard you can:
 
@@ -201,14 +239,14 @@ The dashboard authenticates with WebAuthn ([py_webauthn](https://github.com/duo-
 
 **Requirements.** WebAuthn only runs in a secure context, so the dashboard must be served over **HTTPS** (the sole exception browsers make is `localhost`). `RP_ID` must equal the hostname exactly — `hsp.example.de`, not `https://hsp.example.de` and not `hsp.example.de:8000`. A passkey is cryptographically bound to `RP_ID`, so if you later move the dashboard to a different hostname you must register a new one.
 
-**Enrolling a key.** There is no anonymous enrolment — a fresh deployment is never up for grabs. Registering requires either an already signed-in session or the `REGISTRATION_TOKEN` from `config.py`, passed as `https://hsp.valentinl.de/passkeys?token=<token>`. The token is validated once, remembered in the session, then dropped from the URL by a redirect; registering spends the unlock and signs you in. A wrong token is logged and changes nothing. The token is **single-use**: registering with it records its SHA-256 in `hsp_consumed_tokens` and the link stops working, so it cannot be replayed out of your browser history or the reverse proxy's access log. Adding further keys while signed in does not spend it. To enrol again, put a new value in `config.py`.
+**Enrolling a key.** There is no anonymous enrolment — a fresh deployment is never up for grabs. Registering requires either an already signed-in session or the `REGISTRATION_TOKEN` from `config.py`, passed as `https://hsp.example.de/passkeys?token=<token>`. The token is validated once, remembered in the session, then dropped from the URL by a redirect; registering spends the unlock and signs you in. A wrong token is logged and changes nothing. The token is **single-use**: registering with it records its SHA-256 in `hsp_consumed_tokens` and the link stops working, so it cannot be replayed out of your browser history or the reverse proxy's access log. Adding further keys while signed in does not spend it. To enrol again, put a new value in `config.py`.
 
 **Managing keys.** Once signed in, the *Passkeys* nav entry lists the registered keys and lets you add or remove them — no token needed while signed in. Adding a second one (e.g. your phone as well as your laptop) is worth doing.
 
 **Locked out?** Set a fresh `REGISTRATION_TOKEN` in `config.py`, restart, and enrol again via `/passkeys?token=...`. Only if you also want to clear the old keys:
 
 ```bash
-psql -d vali -c "DELETE FROM hsp_credentials"
+psql -d <DB_NAME> -c "DELETE FROM hsp_credentials"
 ```
 
 ## Product ids (tennis)
@@ -239,6 +277,7 @@ hochschulsport-muenster-delcom/
     │   ├── delcom.py           # Delcom backbone API client (SSO login, slots, booking)
     │   ├── booking.py          # Booking engine: one pass, records the attempt
     │   ├── worker.py           # Scheduled worker: pre-warm login, spin-wait, grab
+    │   ├── courses.py          # One-off course enrolment (+ its timer worker)
     │   ├── dow.py              # Weekday-expression + next-window helpers (dependency-light)
     │   ├── window.py           # When a slot's booking window opens (HH:05 of the slot's hour)
     │   ├── systemd.py          # Generate per-job timers (fire early) + web units
@@ -251,7 +290,8 @@ hochschulsport-muenster-delcom/
         │   ├── dashboard.py    # GET /
         │   ├── jobs.py         # Job CRUD + manual/dry run
         │   ├── history.py      # GET /history
-        │   └── slots.py        # GET /slots (live slot browser)
+        │   ├── slots.py        # GET /slots (live slot browser)
+        │   └── courses.py      # GET /courses (course browser + scheduled grabs)
         └── templates/          # Jinja2 templates (Pico CSS + HTMX)
 ```
 

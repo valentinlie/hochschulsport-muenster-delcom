@@ -5,6 +5,7 @@ from .dashboard import router as dashboard_router
 from .jobs import router as jobs_router
 from .history import router as history_router
 from .slots import router as slots_router
+from .courses import router as courses_router
 
 router = APIRouter()
 router.include_router(auth_router)
@@ -12,3 +13,4 @@ router.include_router(dashboard_router)
 router.include_router(jobs_router)
 router.include_router(history_router)
 router.include_router(slots_router)
+router.include_router(courses_router)

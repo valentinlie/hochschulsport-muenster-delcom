@@ -1,7 +1,7 @@
 """The booking engine: finds and books a slot, recording the outcome.
 
-Standalone (opens its own DB connections) so APScheduler and the CLI can
-call it directly.
+Standalone (opens its own DB connections) so the timer worker, the web UI and
+the CLI can call it directly.
 """
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 from typing import Iterable
+
+import requests
 
 from core import db
 from config import ACTIVITY_OPTIONS, DELCOM_PASSWORD, DELCOM_USERNAME
@@ -81,6 +83,16 @@ def _pick_slot(
     return matches[0]
 
 
+def _still_free(client: DelcomClient, slot: dict, target: date) -> bool:
+    """After a lost response: True only if the slot is provably still unbooked."""
+    try:
+        return slot_is_free(
+            slot, client.get_court_bookings({slot["bookableProductId"]}, target)
+        )
+    except Exception:  # noqa: BLE001 — can't tell, so assume the POST may have landed
+        return False
+
+
 def execute_booking(
     activity_product_id: int,
     target: date,
@@ -91,20 +103,23 @@ def execute_booking(
     job_id: int | None = None,
     client: DelcomClient | None = None,
     member: dict | None = None,
+    bookings: list[dict] | None = None,
 ) -> tuple[str, str]:
     """Make one booking pass. Returns ``(status, message)``.
 
     ``allowed_court_ids`` restricts booking to those courts (an activity like
     tennis 126 spans several locations; the court set selects one).
 
-    ``client``/``member`` let a caller pass an already-authenticated session
-    (the scheduled worker pre-warms the login so it is off the critical path);
-    when omitted, a fresh login happens here as before.
+    ``client``/``member``/``bookings`` let the scheduled worker pass a
+    pre-warmed session and the day's existing bookings fetched during its lead
+    time, so only the slot query and the POST sit on the critical path. When
+    omitted, they are fetched here.
 
     Queries the slots once and books immediately; the only fallback is
     trying the next free court when the server rejects one as blocked.
 
-    Records a hsp_booking_attempts row per outcome; if the database is
+    Records a hsp_booking_attempts row per outcome — after the grab, so neither
+    the DB nor the court-name lookup slows it down. If the database is
     unreachable (e.g. CLI use without postgres) it logs a warning instead.
     """
     target_str = target.isoformat()
@@ -139,60 +154,92 @@ def execute_booking(
     if allowed_court_ids is not None:
         allowed = set(allowed_court_ids)
         slots = [s for s in slots if s.get("bookableProductId") in allowed]
-    try:
-        bookings = client.get_court_bookings(
-            {s["bookableProductId"] for s in slots}, target
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Bookings cross-check failed, trusting isAvailable: %s", exc)
-        bookings = []
+    if bookings is None:
+        try:
+            bookings = client.get_court_bookings(
+                {s["bookableProductId"] for s in slots}, target
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Bookings cross-check failed, trusting isAvailable: %s", exc)
+            bookings = []
 
-    # walk the candidate courts; a court the server rejects as blocked is
-    # excluded and the next free one is tried right away
-    last_error: str | None = None
+    # The grab: walk the candidate courts; a court the server rejects as blocked
+    # is excluded and the next free one is tried right away. Nothing slow
+    # (DB writes, name lookups) happens inside this loop.
+    failures: list[tuple[int, str, dict]] = []  # (court, error, slot), recorded below
     blocked_courts: set[int] = set()
+    chosen: dict | None = None
+    booked: dict | None = None
+    unknown: str | None = None  # set when a POST got no answer and may have landed
+    lost = 0
     while True:
         slot = _pick_slot(
             slots, bookings, slot_start_time, preferred_court_id, blocked_courts
         )
         if slot is None:
             break
-
         court_id = slot["bookableProductId"]
-        court_name = client.product_name(court_id) or f"Court {court_id}"
         if dry_run:
-            message = f"DRY RUN — would book {court_name} at {slot_start_time}"
-            record(
-                "success", message,
-                court_id=court_id, court_name=court_name,
-                raw=json.dumps(slot, ensure_ascii=False),
-            )
-            return "dry_run", message
+            chosen = slot
+            break
         try:
             booked = client.create_booking(member["id"], slot) or {}
+            chosen = slot
+            break
         except DelcomError as exc:
-            last_error = str(exc)
-            record(
-                "failed", last_error,
-                court_id=court_id, court_name=court_name,
-                raw=json.dumps(slot, ensure_ascii=False),
-            )
+            failures.append((court_id, str(exc), slot))
             blocked_courts.add(court_id)
-            continue
+        except requests.RequestException as exc:
+            # No answer: the booking may or may not exist. Retry this court only
+            # while it is provably still free — never move on to another court,
+            # or we could end up holding two.
+            lost += 1
+            if lost >= 3 or not _still_free(client, slot, target):
+                chosen, unknown = slot, str(exc)
+                break
+            failures.append((court_id, f"No answer, retrying: {exc}", slot))
 
+    def court_name(court_id: int) -> str:
+        return client.product_name(court_id) or f"Court {court_id}"
+
+    for court_id, error, slot in failures:
+        record(
+            "failed", error, court_id=court_id, court_name=court_name(court_id),
+            raw=json.dumps(slot, ensure_ascii=False),
+        )
+
+    if chosen is not None:
+        court_id = chosen["bookableProductId"]
+        name = court_name(court_id)
+        if dry_run:
+            message = f"DRY RUN — would book {name} at {slot_start_time}"
+            record(
+                "success", message, court_id=court_id, court_name=name,
+                raw=json.dumps(chosen, ensure_ascii=False),
+            )
+            return "dry_run", message
+        if unknown is not None:
+            message = (
+                f"No answer booking {name} on {target_str} at {slot_start_time} "
+                f"({unknown}); it may have gone through — check the site"
+            )
+            record(
+                "error", message, court_id=court_id, court_name=name,
+                raw=json.dumps(chosen, ensure_ascii=False),
+            )
+            return "error", message
         # store the participation id — cancellation deletes /participations/{id};
         # the response's bookingId is a different entity and cannot be DELETEd
         booking_id = booked.get("id") if isinstance(booked, dict) else None
-        message = f"Booked {court_name} on {target_str} at {slot_start_time}"
+        message = f"Booked {name} on {target_str} at {slot_start_time}"
         record(
-            "success", message,
-            court_id=court_id, court_name=court_name, booking_id=booking_id,
-            raw=json.dumps(booked, ensure_ascii=False),
+            "success", message, court_id=court_id, court_name=name,
+            booking_id=booking_id, raw=json.dumps(booked, ensure_ascii=False),
         )
         return "success", message
 
-    if last_error is not None:
-        return "failed", last_error
+    if failures:
+        return "failed", failures[-1][1]
 
     available = sorted(
         {slot_local_time(s) for s in slots if slot_is_free(s, bookings)}
@@ -205,13 +252,32 @@ def execute_booking(
     return "no_slot", message
 
 
-def run_booking_job(job_id: int, next_occurrence: bool = False) -> str:
-    """Execute one booking attempt for ``job_id``. Returns the status string.
+def job_courts(job: db.Job) -> tuple[int, ...] | None:
+    """The courts a job may book (its activity option's court set), or None = any."""
+    option = ACTIVITY_OPTIONS.get(job.activity_option or "")
+    return option["court_ids"] if option else None
 
-    Safe to call from APScheduler or manually. With ``next_occurrence``
-    (the "Run Now" button) the nearest date the job's slot occurs is booked
-    instead of ``date_offset`` days ahead — clicking outside the cron fire
-    day would otherwise target a day whose window isn't open yet.
+
+def book_job(job: db.Job, target: date, **kwargs) -> tuple[str, str]:
+    """:func:`execute_booking` for a saved job on ``target``."""
+    return execute_booking(
+        activity_product_id=job.activity_product_id,
+        target=target,
+        slot_start_time=job.slot_start_time,
+        preferred_court_id=job.preferred_court_id,
+        allowed_court_ids=job_courts(job),
+        job_id=job.id,
+        **kwargs,
+    )
+
+
+def run_booking_job(job_id: int, next_occurrence: bool = False) -> str:
+    """Execute one booking attempt for ``job_id`` right now. Returns the status.
+
+    With ``next_occurrence`` (the "Run Now" button) the nearest date the job's
+    slot occurs is booked instead of ``date_offset`` days ahead — clicking
+    outside the fire day would otherwise target a day whose window isn't open
+    yet. (Scheduled runs go through ``core.worker.run_job``.)
     """
     job = db.get_job(job_id)
     if job is None:
@@ -224,13 +290,5 @@ def run_booking_job(job_id: int, next_occurrence: bool = False) -> str:
         target = _next_target_date(job)
     else:
         target = date.today() + timedelta(days=job.date_offset)
-    option = ACTIVITY_OPTIONS.get(job.activity_option or "")
-    status, _message = execute_booking(
-        activity_product_id=job.activity_product_id,
-        target=target,
-        slot_start_time=job.slot_start_time,
-        preferred_court_id=job.preferred_court_id,
-        allowed_court_ids=option["court_ids"] if option else None,
-        job_id=job.id,
-    )
+    status, _message = book_job(job, target)
     return status

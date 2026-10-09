@@ -12,9 +12,9 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from config import ACTIVITY_OPTIONS, DELCOM_PASSWORD, DELCOM_USERNAME
+from config import DELCOM_PASSWORD, DELCOM_USERNAME
 from core import db
-from core.booking import execute_booking
+from core.booking import book_job, job_courts
 from core.delcom import DelcomClient
 from core.dow import LOCAL_TZ
 
@@ -43,14 +43,24 @@ def run_job(job_id: int) -> str:
     if window <= now:
         window += timedelta(days=1)
     target = window.date() + timedelta(days=job.date_offset)
-    option = ACTIVITY_OPTIONS.get(job.activity_option or "")
 
     # Pre-warm: authenticate now, while there is still lead time.
     client: DelcomClient | None = DelcomClient(DELCOM_USERNAME, DELCOM_PASSWORD)
     member = None
+    bookings = None
     try:
         client.ensure_login()  # cached token if valid, else one SSO login
         member = client.get_member()
+        # Also fetch the target day's existing bookings now: the hour is not
+        # released yet, so only admin blocks can be there — the same list the
+        # fire-time cross-check would get, minus a round trip on the critical
+        # path. Needs the court set up front; without one it stays at fire time.
+        courts = {job.preferred_court_id} if job.preferred_court_id else job_courts(job)
+        if courts:
+            try:
+                bookings = client.get_court_bookings(courts, target)
+            except Exception as exc:  # noqa: BLE001 — refetched at fire time
+                log.warning("Job %s bookings prefetch failed (%s)", job_id, exc)
         lead = (window - datetime.now(LOCAL_TZ)).total_seconds()
         log.info("Job %s pre-warmed; %.2fs before window opens", job_id, lead)
     except Exception as exc:  # noqa: BLE001 — fall back to a cold login in execute_booking
@@ -62,15 +72,8 @@ def run_job(job_id: int) -> str:
     if 0 < wait <= MAX_WAIT:
         time.sleep(wait)
 
-    status, message = execute_booking(
-        activity_product_id=job.activity_product_id,
-        target=target,
-        slot_start_time=job.slot_start_time,
-        preferred_court_id=job.preferred_court_id,
-        allowed_court_ids=option["court_ids"] if option else None,
-        job_id=job.id,
-        client=client,
-        member=member,
+    status, message = book_job(
+        job, target, client=client, member=member, bookings=bookings
     )
     log.info("Job %s finished: %s — %s", job_id, status, message)
     return status

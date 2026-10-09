@@ -76,6 +76,19 @@ def _token_valid(token: dict | None, margin: int = 300) -> bool:
     return exp - timedelta(seconds=margin) > datetime.now(timezone.utc)
 
 
+def _rows(data: Any) -> Any:
+    """Unwrap the paginated ``{"data": [...]}`` envelope some endpoints use."""
+    return data.get("data", data) if isinstance(data, dict) else data
+
+
+def _error_message(r: requests.Response) -> str:
+    """The server's ``message`` for a failed call, else the raw body."""
+    try:
+        return r.json().get("message", r.text)
+    except Exception:  # noqa: BLE001 — not JSON
+        return r.text
+
+
 class DelcomError(RuntimeError):
     """Raised when the API returns an unexpected response."""
 
@@ -284,53 +297,51 @@ class DelcomClient:
 
     # -- requests -----------------------------------------------------------
 
-    def _get(self, path: str, params: dict | None = None) -> Any:
+    def _request(
+        self, method: str, path: str, params: dict | None = None, **kwargs: Any
+    ) -> requests.Response:
+        """Authenticated call. On 401 (token expired/rejected) re-login once and
+        retry — a 401 means the request was not processed, so retrying a POST
+        cannot double-book."""
         self.ensure_login()
+        p = {"cf": 0, **(params or {})}  # cf=0 bypasses the app-version gate
+
+        def send() -> requests.Response:
+            return self.session.request(
+                method, f"{API_BASE}{path}", headers=self._auth_headers(),
+                params=p, timeout=self.timeout, **kwargs,
+            )
+
+        r = send()
+        if r.status_code == 401:
+            self.token = None
+            self.ensure_login()
+            r = send()
+        return r
+
+    def _get(self, path: str, params: dict | None = None) -> Any:
+        r = self._request("GET", path, params)
+        r.raise_for_status()
+        return r.json()
+
+    def _get_public(self, path: str, params: dict | None = None) -> Any:
+        """GET an endpoint that needs no login (course catalogue, config options).
+
+        Goes through the same session, so it also keeps the API connection warm.
+        """
         p = dict(params or {})
-        p.setdefault("cf", 0)  # bypass the app-version gate
+        p.setdefault("cf", 0)
         r = self.session.get(
             f"{API_BASE}{path}",
-            headers=self._auth_headers(),
+            headers={"x-platform": "CF", "x-custom-lang": "de"},
             params=p,
             timeout=self.timeout,
         )
-        if r.status_code == 401:
-            # token expired -> re-login once
-            self.token = None
-            self.ensure_login()
-            r = self.session.get(
-                f"{API_BASE}{path}",
-                headers=self._auth_headers(),
-                params=p,
-                timeout=self.timeout,
-            )
         r.raise_for_status()
         return r.json()
 
     def _post(self, path: str, body: dict, params: dict | None = None) -> requests.Response:
-        self.ensure_login()
-        p = dict(params or {})
-        p.setdefault("cf", 0)
-        r = self.session.post(
-            f"{API_BASE}{path}",
-            headers=self._auth_headers(),
-            params=p,
-            json=body,
-            timeout=self.timeout,
-        )
-        if r.status_code == 401:
-            # cached token was rejected -> re-login once and retry (a 401 means
-            # the POST was not processed, so retrying cannot double-book)
-            self.token = None
-            self.ensure_login()
-            r = self.session.post(
-                f"{API_BASE}{path}",
-                headers=self._auth_headers(),
-                params=p,
-                json=body,
-                timeout=self.timeout,
-            )
-        return r
+        return self._request("POST", path, params, json=body)
 
     # -- domain endpoints ---------------------------------------------------
 
@@ -355,8 +366,7 @@ class DelcomClient:
                 "endDate": {"$lte": _iso_utc(end)},
             }
         )
-        data = self._get("/products/bookable-slots", {"s": s})
-        return data.get("data", data) if isinstance(data, dict) else data
+        return _rows(self._get("/products/bookable-slots", {"s": s}))
 
     def get_court_bookings(
         self, court_ids: Iterable[int], day: date
@@ -377,8 +387,7 @@ class DelcomClient:
                 "endDate": {"$lte": _iso_utc(end)},
             }
         )
-        data = self._get("/bookings", {"s": s, "limit": 500})
-        return data.get("data", data) if isinstance(data, dict) else data
+        return _rows(self._get("/bookings", {"s": s, "limit": 500}))
 
     def create_booking(self, member_id: int, slot: dict) -> dict[str, Any]:
         """Book a slot. Echoes the slot's own datetimes/ids back verbatim.
@@ -399,21 +408,110 @@ class DelcomClient:
         }
         r = self._post("/participations", body)
         if not r.ok:
-            try:
-                msg = r.json().get("message", r.text)
-            except Exception:
-                msg = r.text
-            raise DelcomError(f"Booking failed ({r.status_code}): {msg}")
+            raise DelcomError(f"Booking failed ({r.status_code}): {_error_message(r)}")
+        return r.json()
+
+    # -- courses (one-off enrolment, sold as a "sale") ------------------------
+
+    def course_product_ids(self, tag_ids: Iterable[int]) -> list[int]:
+        """Course product ids carrying any of the shop tags (the ``tags=`` of
+        /shop/courses/list, e.g. 259 = Tennis Kurse)."""
+        data = self._get_public("/courses/query/availableCourseTagsAndProductIds")
+        mapping = data.get("tagIdToProductIds", {})
+        return sorted({p for t in tag_ids for p in mapping.get(str(t), [])})
+
+    def get_courses(self, product_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """Courses of the given products whose enrolment has not closed yet."""
+        ids = sorted(set(product_ids))
+        if not ids:
+            return []
+        s = json.dumps(
+            {
+                "productId": {"$in": ids},
+                "endDateEnrollment": {"$gte": _iso_utc(datetime.now(timezone.utc))},
+            }
+        )
+        return _rows(self._get_public(
+            "/courses", {"s": s, "sort": "startDate,ASC", "limit": 500}
+        ))
+
+    def get_course(self, course_id: int) -> dict[str, Any]:
+        return self._get_public(f"/courses/{course_id}")
+
+    def sales_person_id(self) -> int | None:
+        """The shop's configured ``sales_person`` (the frontend puts it on every sale)."""
+        s = json.dumps({"key": "sales_person"})
+        rows = _rows(self._get_public("/configuration-options", {"s": s}))
+        try:
+            return int(rows[0]["value"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def course_sale_body(
+        course: dict, member: dict, sales_person_id: int | None
+    ) -> dict[str, Any]:
+        """The POST /sales body the shop sends for a course — the cart's
+        "Checkout" step, minus the cart (the cart items aren't referenced)."""
+        category = member.get("category")
+        return {
+            "siteId": course.get("siteId", 0),
+            "salesPersonId": sales_person_id or member["id"],
+            "customerPersonId": member["id"],
+            "organizationId": None,
+            "orderNumber": None,
+            "saleItems": [
+                {
+                    "productId": course["productId"],
+                    "subscriptionId": None,
+                    "courseId": course["id"],
+                    "quantity": 1,
+                    "params": {
+                        "familyMembersInvited": [],
+                        "bookerAssisting": True,
+                        "startDate": course["startDate"],
+                        "endDate": course["endDate"],
+                    },
+                    "customerCategory": int(category) if category not in (None, "") else None,
+                    "siteId": course.get("siteId", 0),
+                }
+            ],
+            "date": None,
+            "modificationDate": None,
+        }
+
+    def create_sale(self, body: dict) -> dict[str, Any]:
+        """Create a sale (enrols in a course). A paid course comes back as a
+        pending sale the member still has to pay on the site."""
+        r = self._post("/sales", body)
+        if not r.ok:
+            raise DelcomError(f"Enrolment failed ({r.status_code}): {_error_message(r)}")
+        return r.json()
+
+    def direct_debit_method(self, member_id: int) -> dict[str, Any] | None:
+        """The member's saved SEPA direct-debit mandate (preferred first), or None."""
+        rows = _rows(self._get("/stored-pay-methods", {"s": json.dumps({"personId": member_id})}))
+        # stored type 1 = legacy direct debit, 2 = direct debit (3 card, 4 PayPal: skipped)
+        debit = [r for r in rows if r.get("type") in (1, 2)]
+        debit.sort(key=lambda r: not r.get("preferred"))
+        return debit[0] if debit else None
+
+    def pay_sale(self, sale_id: int, method: dict) -> dict[str, Any]:
+        """Pay a pending sale with a saved direct-debit mandate \u2014 the checkout's
+        "Bezahlen" button. Charges real money."""
+        r = self._post(f"/sales/{sale_id}/pay", {
+            "payMethod": 0,  # PAY_METHOD_DIRECT_DEBIT
+            "storedPayMethodId": method["id"],
+            "paymentProviderType": method.get("paymentProviderType"),
+            "createStoredPayMethod": False,
+            "onSuccessRedirectUrl": f"{FRONTEND}/sales/callback",
+        })
+        if not r.ok:
+            raise DelcomError(f"Payment failed ({r.status_code}): {r.text[:300]}")
         return r.json()
 
     def _delete_participation(self, participation_id: int) -> requests.Response:
-        self.ensure_login()
-        return self.session.delete(
-            f"{API_BASE}/participations/{participation_id}",
-            headers=self._auth_headers(),
-            params={"cf": 0},
-            timeout=self.timeout,
-        )
+        return self._request("DELETE", f"/participations/{participation_id}")
 
     def cancel_booking(self, participation_id: int) -> None:
         """Cancel a booking by deleting its participation ("Stornieren").
@@ -431,17 +529,12 @@ class DelcomClient:
             s = json.dumps(
                 {"bookingId": participation_id, "memberId": member["id"]}
             )
-            rows = self._get("/participations", {"s": s, "limit": 1})
-            rows = rows.get("data", rows) if isinstance(rows, dict) else rows
+            rows = _rows(self._get("/participations", {"s": s, "limit": 1}))
             if rows:
                 r = self._delete_participation(rows[0]["id"])
                 if r.ok:
                     return
-        try:
-            msg = r.json().get("message", r.text)
-        except Exception:
-            msg = r.text
-        raise DelcomError(f"Cancellation failed ({r.status_code}): {msg}")
+        raise DelcomError(f"Cancellation failed ({r.status_code}): {_error_message(r)}")
 
     def product_name(self, product_id: int) -> str | None:
         """Best-effort German display name for a product id."""
@@ -454,7 +547,7 @@ class DelcomClient:
                     "limit": 1,
                 },
             )
-            rows = data.get("data", data) if isinstance(data, dict) else data
+            rows = _rows(data)
             if not rows:
                 return None
             tr = rows[0].get("translations") or []
