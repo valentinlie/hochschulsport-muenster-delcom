@@ -154,7 +154,7 @@ ORIGIN = "https://hsp.example.de"
 SESSION_SECRET = "change_me"
 SESSION_MAX_AGE = 30 * 24 * 3600
 
-# Single-use enrolment token: /passkeys?token=<value>. Empty closes enrolment
+# Single-use enrolment token: /settings?token=<value>. Empty closes enrolment
 # to everyone but an already signed-in session.
 REGISTRATION_TOKEN = ""
 
@@ -193,7 +193,7 @@ uv run python src/cli.py web                # same, via the CLI
 Open the dashboard behind your HTTPS reverse proxy (the host you set as
 `ORIGIN`) and unlock it with your **passkey**. To enrol the first key, set
 `REGISTRATION_TOKEN` in `config.py` and visit
-`https://hsp.example.de/passkeys?token=<token>` — see [Passkeys](#passkeys).
+`https://hsp.example.de/settings?token=<token>` — see [Passkeys](#passkeys).
 
 From the dashboard you can:
 
@@ -235,15 +235,15 @@ scheduled ones (skipped with a warning if PostgreSQL isn't running).
 
 The dashboard authenticates with WebAuthn ([py_webauthn](https://github.com/duo-labs/py_webauthn)) — no password anywhere. Keys live in the `hsp_credentials` table.
 
-**Turning auth off.** For a purely local run, set `AUTH_ENABLED = False` in `config.py`. The dashboard is then served with no login at all: `/login` and `/passkeys` redirect to the dashboard, the ceremony endpoints return 404, and the Passkeys/Log out controls disappear. Your registered keys stay in the database untouched, so flipping it back to `True` restores exactly where you left off. The app logs a warning on every start while it is off — only do this when the dashboard is not reachable from the network.
+**Turning auth off.** For a purely local run, set `AUTH_ENABLED = False` in `config.py`. The dashboard is then served with no login at all: `/login` and `/settings` redirect to the dashboard, the ceremony endpoints return 404, and the Settings/Log out controls disappear. Your registered keys stay in the database untouched, so flipping it back to `True` restores exactly where you left off. The app logs a warning on every start while it is off — only do this when the dashboard is not reachable from the network.
 
 **Requirements.** WebAuthn only runs in a secure context, so the dashboard must be served over **HTTPS** (the sole exception browsers make is `localhost`). `RP_ID` must equal the hostname exactly — `hsp.example.de`, not `https://hsp.example.de` and not `hsp.example.de:8000`. A passkey is cryptographically bound to `RP_ID`, so if you later move the dashboard to a different hostname you must register a new one.
 
-**Enrolling a key.** There is no anonymous enrolment — a fresh deployment is never up for grabs. Registering requires either an already signed-in session or the `REGISTRATION_TOKEN` from `config.py`, passed as `https://hsp.example.de/passkeys?token=<token>`. The token is validated once, remembered in the session, then dropped from the URL by a redirect; registering spends the unlock and signs you in. A wrong token is logged and changes nothing. The token is **single-use**: registering with it records its SHA-256 in `hsp_consumed_tokens` and the link stops working, so it cannot be replayed out of your browser history or the reverse proxy's access log. Adding further keys while signed in does not spend it. To enrol again, put a new value in `config.py`.
+**Enrolling a key.** There is no anonymous enrolment — a fresh deployment is never up for grabs. Registering requires either an already signed-in session or the `REGISTRATION_TOKEN` from `config.py`, passed as `https://hsp.example.de/settings?token=<token>`. The token is validated once, remembered in the session, then dropped from the URL by a redirect; registering spends the unlock and signs you in. A wrong token is logged and changes nothing. The token is **single-use**: registering with it records its SHA-256 in `hsp_consumed_tokens` and the link stops working, so it cannot be replayed out of your browser history or the reverse proxy's access log. Adding further keys while signed in does not spend it. To enrol again, put a new value in `config.py`.
 
 **Managing keys.** Once signed in, the *Passkeys* nav entry lists the registered keys and lets you add or remove them — no token needed while signed in. Adding a second one (e.g. your phone as well as your laptop) is worth doing.
 
-**Locked out?** Set a fresh `REGISTRATION_TOKEN` in `config.py`, restart, and enrol again via `/passkeys?token=...`. Only if you also want to clear the old keys:
+**Locked out?** Set a fresh `REGISTRATION_TOKEN` in `config.py`, restart, and enrol again via `/settings?token=...`. Only if you also want to clear the old keys:
 
 ```bash
 psql -d <DB_NAME> -c "DELETE FROM hsp_credentials"

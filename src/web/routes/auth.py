@@ -76,18 +76,18 @@ def logout_route(request: Request):
 
 # ── Passkey management ───────────────────────────────────────────────────────
 
-@router.get("/passkeys", response_class=HTMLResponse)
-def passkeys_page(request: Request, token: str | None = None):
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, token: str | None = None):
     if not AUTH_ENABLED:
         return RedirectResponse("/", status_code=303)
     if token is not None:
         # Bounce to a clean URL either way so the token leaves the address bar.
         unlock_enrolment(request, token)
-        return RedirectResponse("/passkeys", status_code=303)
+        return RedirectResponse("/settings", status_code=303)
     if not registration_allowed(request):
         return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse(request, "passkeys.html", ctx(
-        credentials=db.get_credentials(), active_page="passkeys",
+    return templates.TemplateResponse(request, "settings.html", ctx(
+        credentials=db.get_credentials(), active_page="settings",
     ))
 
 
@@ -115,7 +115,7 @@ async def register_verify(request: Request):
     return {"ok": True}
 
 
-@router.post("/passkeys/{credential_id}/delete")
+@router.post("/settings/passkeys/{credential_id}/delete")
 def delete_passkey(request: Request, credential_id: str, _user: str = Depends(require_auth)):
     db.delete_credential(credential_id)
-    return RedirectResponse("/passkeys", status_code=303)
+    return RedirectResponse("/settings", status_code=303)

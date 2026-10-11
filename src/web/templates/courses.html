@@ -4,10 +4,6 @@
 
 {% block content %}
 <h2>Courses</h2>
-<p>One-off enrolment: <strong>Schedule</strong> grabs a spot the second enrolment opens (the bot wakes a
-    minute early, logs in, then fires on the exact second and retries for a minute). A paid course is then
-    <strong>paid right away by SEPA direct debit</strong> with your saved mandate; if that fails the spot
-    stays reserved as a pending sale — pay it on the site (link in the history).</p>
 
 <h3>Scheduled</h3>
 {% if jobs %}
@@ -41,9 +37,12 @@
 <h3>Open for enrolment</h3>
 <form method="get" action="/courses">
     <label>
-        Shop tag ids
-        <input name="tags" value="{{ tags }}">
-        <small>The <code>tags=</code> of the shop's course list URL — 259 = Tennis Kurse.</small>
+        Course
+        <select name="tags">
+            {% for id, name in course_tags.items() %}
+            <option value="{{ id }}" {% if id == tags %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
     </label>
     <button type="submit">Show courses</button>
 </form>
@@ -96,6 +95,6 @@
     </tbody>
 </table>
 {% elif not error %}
-<p>No courses open for enrolment with those tags.</p>
+<p>No courses open for enrolment in this category.</p>
 {% endif %}
 {% endblock %}

@@ -8,10 +8,20 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <style>
-        nav ul li a.active {
-            font-weight: bold;
-            text-decoration: underline;
-        }
+        .site-header { position: sticky; top: 0; z-index: 10; background: var(--pico-background-color);
+            border-bottom: 1px solid var(--pico-muted-border-color); box-shadow: 0 1px 8px rgba(0,0,0,0.04); margin-bottom: 1.5rem; }
+        .site-header nav, .site-header nav ul { flex-wrap: wrap; }
+        .site-header nav a { white-space: nowrap; }
+        .brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; color: var(--pico-color); font-weight: 700; letter-spacing: -0.01em; }
+        .brand-logo { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 0.5rem;
+            background: linear-gradient(135deg, var(--pico-primary), #4b2e83); color: #fff; font-size: 1rem; }
+        .site-header nav a:not(.brand) { border-radius: 999px; padding: 0.35rem 0.8rem; text-decoration: none; color: var(--pico-muted-color); }
+        .site-header nav a:not(.brand):hover { color: var(--pico-color); background: rgba(127,127,127,0.1); }
+        .site-header nav a.active { color: var(--pico-primary-inverse); background: var(--pico-primary-background); font-weight: 600; }
+        .site-header nav form { margin: 0; }
+        .site-header nav button { padding: 0.35rem 0.8rem; font-size: 0.85rem; margin: 0; }
+        .muted { color: var(--pico-muted-color); }
+        section { margin-top: 2.5rem; }
 
         .alert-success {
             color: #2a7a2a;
@@ -101,6 +111,13 @@
             margin: 0 0.15rem;
             padding: 0.25rem 0.5rem;
             font-size: 0.8rem;
+            width: auto;
+        }
+
+        /* Keep an input+button group on one line: the button must not wrap. */
+        [role="group"] button {
+            width: auto;
+            white-space: nowrap;
         }
 
         /* Result messages swapped into an .actions cell (which is nowrap):
@@ -126,9 +143,10 @@
 </head>
 
 <body>
-    <nav class="container-fluid">
+    <header class="site-header">
+    <nav class="container">
         <ul>
-            <li><strong>Hochschulsport Münster Bot</strong></li>
+            <li><a href="/" class="brand"><span class="brand-logo" aria-hidden="true">🎾</span>Hochschulsport Münster Bot</a></li>
         </ul>
         {% if is_authenticated(request) %}
         <ul>
@@ -137,16 +155,17 @@
             <li><a href="/slots" {% if active_page=="slots" %}class="active" {% endif %}>Live slots</a></li>
             <li><a href="/courses" {% if active_page=="courses" %}class="active" {% endif %}>Courses</a></li>
             {% if auth_enabled %}
-            <li><a href="/passkeys" {% if active_page=="passkeys" %}class="active" {% endif %}>Passkeys</a></li>
+            <li><a href="/settings" {% if active_page=="settings" %}class="active" {% endif %}>Settings</a></li>
             <li>
-                <form action="/logout" method="post" style="margin: 0;">
-                    <button type="submit" class="secondary outline" style="padding: 0.25rem 0.6rem;">Log out</button>
+                <form action="/logout" method="post">
+                    <button type="submit" class="secondary outline">Log out</button>
                 </form>
             </li>
             {% endif %}
         </ul>
         {% endif %}
     </nav>
+    </header>
     <main class="container">
         {% block content %}{% endblock %}
     </main>

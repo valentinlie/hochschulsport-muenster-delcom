@@ -1,39 +1,34 @@
 {% extends "base.html" %}
-{% block title %}Passkeys — Hochschulsport Münster Bot{% endblock %}
+{% block title %}Settings — Hochschulsport Münster Bot{% endblock %}
 
 {% block content %}
-<article style="max-width: 40rem; margin: 2rem auto;">
-    <hgroup>
-        <h2>Passkeys</h2>
-        {% if is_authenticated(request) %}
-        <p>Keys that can unlock this dashboard.</p>
-        {% else %}
-        <p>Register the passkey that will unlock this dashboard.</p>
-        {% endif %}
-    </hgroup>
+{% if is_authenticated(request) %}
+<h2>Settings</h2>
+{% else %}
+<h2>Set up a passkey</h2>
+<p class="alert-success">
+    Enrolment unlocked with your token. Register a key now — it signs you in and the
+    unlock is spent.
+</p>
+{% endif %}
 
-    {% if not is_authenticated(request) %}
-    <p class="alert-success">
-        Enrolment unlocked with your token. Register a key now — it signs you in and the
-        unlock is spent.
-    </p>
-    {% endif %}
-
-    <div id="error" class="alert-error" style="display: none;"></div>
+<section>
+    <h3>Your passkeys</h3>
+    <div id="error" class="alert-error" role="alert" hidden></div>
 
     {% if credentials %}
     <table>
         <thead>
-            <tr><th>Name</th><th>Added</th><th>Last used</th><th></th></tr>
+            <tr><th>Device</th><th>Added</th><th>Last used</th><th></th></tr>
         </thead>
         <tbody>
             {% for cred in credentials %}
             <tr>
                 <td>{{ cred.label }}</td>
                 <td>{{ cred.created_at.strftime('%d.%m.%Y') }}</td>
-                <td>{{ cred.last_used_at.strftime('%d.%m.%Y %H:%M') if cred.last_used_at else '—' }}</td>
+                <td>{{ cred.last_used_at.strftime('%d.%m.%Y %H:%M') if cred.last_used_at else 'never' }}</td>
                 <td class="actions">
-                    <form action="/passkeys/{{ cred.credential_id }}/delete" method="post"
+                    <form action="/settings/passkeys/{{ cred.credential_id }}/delete" method="post"
                           onsubmit="return confirm('Remove this passkey?{% if credentials|length == 1 %} It is the only one — removing it reopens first-run setup to anyone who can reach this page.{% endif %}');">
                         <button type="submit" class="secondary outline">Remove</button>
                     </form>
@@ -45,13 +40,19 @@
     {% endif %}
 
     <form id="register-form">
-        <label for="label">
-            Name
-            <input type="text" id="label" name="label" placeholder="e.g. Laptop Touch ID" maxlength="60">
-        </label>
-        <button id="register" type="submit">Register a passkey</button>
+        <fieldset role="group">
+            <input type="text" id="label" name="label" placeholder="Device name, e.g. Laptop Touch ID"
+                   maxlength="60" aria-label="Device name">
+            <button id="register" type="submit" class="secondary">
+                {{ "Add another device" if credentials else "Register a passkey" }}
+            </button>
+        </fieldset>
     </form>
-</article>
+    <p><small class="muted">
+        Register a passkey on your phone or laptop so you can still sign in if
+        you lose this device.
+    </small></p>
+</section>
 
 {% include "partials/webauthn_js.html" %}
 <script>
@@ -62,7 +63,7 @@ const errorBox = document.getElementById('error');
 
 function showError(message) {
     errorBox.textContent = message;
-    errorBox.style.display = 'block';
+    errorBox.hidden = false;
 }
 
 if (!webauthnSupported()) {
@@ -72,7 +73,7 @@ if (!webauthnSupported()) {
 
 form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    errorBox.style.display = 'none';
+    errorBox.hidden = true;
     button.setAttribute('aria-busy', 'true');
     button.disabled = true;
     try {
@@ -86,7 +87,7 @@ form.addEventListener('submit', async (event) => {
             credential: encodeAttestation(credential),
             label: labelInput.value,
         });
-        window.location.href = '/passkeys';
+        window.location.href = '/settings';
     } catch (err) {
         showError(err.name === 'NotAllowedError'
             ? 'Registration was cancelled, timed out, or this key is already registered.'

@@ -6,7 +6,7 @@ A successful assertion flips a signed session cookie, and ``require_auth``
 guards the routes from then on.
 
 Registering a passkey requires either an already signed-in session or the
-enrolment token from config.py (``/passkeys?token=...``). There is no
+enrolment token from config.py (``/settings?token=...``). There is no
 anonymous enrolment, not even for the first key — see ``registration_allowed``.
 
 Setting ``AUTH_ENABLED = False`` in config.py switches the whole thing off and

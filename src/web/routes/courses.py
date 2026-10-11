@@ -19,7 +19,25 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DEFAULT_TAGS = "259"  # Tennis Kurse (the tags= of /shop/courses/list)
+# Shop course categories: the level-5 tags (the tags= of /shop/courses/list) of
+# /courses/query/availableCourseTagsAndProductIds — together they cover every course.
+COURSE_TAGS = {
+    "72": "Erste Hilfe",
+    "75": "Fit over 60",
+    "30": "Fortbildungen",
+    "362": "Fußball Frauen Wettkampfsport",
+    "254": "Gesundheitssport",
+    "253": "Padel Tennis Kurse",
+    "255": "Schwimmen für Babys und Kleinkinder",
+    "262": "Schwimmkurse für Erwachsene",
+    "300": "Selbstverteidigung für Frauen",
+    "321": "Ski",
+    "333": "Sporttouren",
+    "326": "Tauchen",
+    "259": "Tennis Kurse",
+    "324": "Windsurfen",
+}
+DEFAULT_TAGS = "259"
 
 
 @router.get("/courses", response_class=HTMLResponse)
@@ -45,7 +63,7 @@ def courses(request: Request, tags: str = DEFAULT_TAGS, _user: str = Depends(req
     jobs = db.get_all_course_jobs()
     return templates.TemplateResponse(
         request, "courses.html",
-        ctx(active_page="courses", tags=tags, rows=rows, error=error, jobs=jobs,
+        ctx(active_page="courses", tags=tags, course_tags=COURSE_TAGS, rows=rows, error=error, jobs=jobs,
             scheduled={j.course_id for j in jobs}, now=datetime.now(LOCAL_TZ)),
     )
 
